@@ -1,0 +1,27 @@
+# Compiler output
+/cache/
+/out/
+
+# Dependencies
+/lib/
+
+# Environment
+.env
+.env.local
+
+# Foundry
+broadcast/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
