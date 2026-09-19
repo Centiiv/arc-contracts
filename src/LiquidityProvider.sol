@@ -53,9 +53,8 @@ contract LiquidityProvider {
     }
 
     function createOrder(Types.OrderParams calldata params) external whenNotPaused {
-        address _relayer = ILiquidityManager(settingsContract).getRelayerAddress();
-        if (msg.sender != _relayer) revert Unauthorized();
-
+        // Relayer check removed — LP nodes call createOrder directly with their own
+        // wallet for onramp. settle() and refund() still enforce onlyRelayer.
         if (params.sender == address(0)) revert ZeroAddress();
         if (params.amount <= 0) revert InvalidAmount();
         if (params.amount < Types.MIN_ORDER_AMOUNT) revert AmountBelowMinimum();
@@ -186,7 +185,7 @@ contract LiquidityProvider {
         order.currentBps = 0;
         order.amount = 0;
 
-        emit OrderRefunded(orderId);
+        emit OrderRefundedEvent(orderId);
     }
 
     function executeRefundTransfer(bytes32 orderId, address tokenAddress) external {
@@ -296,7 +295,7 @@ contract LiquidityProvider {
     event OrderCreated(bytes32 indexed orderId, address indexed sender, int256 amount, int256 protocolFee, int256 rate, bytes32 messageHash);
     event OrderSettled(bytes32 indexed orderId, address indexed liquidityProvider, int256 settlePercent);
     event SettlementTransferred(bytes32 indexed orderId, int256 settlePercent);
-    event OrderRefunded(bytes32 indexed orderId);
+    event OrderRefundedEvent(bytes32 indexed orderId);
     event RefundTransferred(bytes32 indexed orderId, int256 refundAmount);
     event EmergencyRefund(bytes32 indexed orderId);
     event TierFeeUpdated(uint8 tier, int256 feeBps);

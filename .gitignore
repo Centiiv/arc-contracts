@@ -3,7 +3,7 @@
 /out/
 
 # Dependencies
-/lib/
+lib/
 
 # Environment
 .env
@@ -25,3 +25,5 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+ARC_LLMs.txt

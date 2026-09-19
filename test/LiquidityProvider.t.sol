@@ -2,9 +2,9 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
-import "../../src/LiquidityManager.sol";
-import "../../src/LiquidityProvider.sol";
-import "../../src/libraries/Types.sol";
+import "../src/LiquidityManager.sol";
+import "../src/LiquidityProvider.sol";
+import "../src/libraries/Types.sol";
 import "./mocks/MockERC20.sol";
 
 contract LiquidityProviderTest is Test {
@@ -266,7 +266,7 @@ contract LiquidityProviderTest is Test {
         vm.prank(relayer);
         lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS);
 
-        (bytes32 psOrderId,,) = lp.pendingSettlements(ORDER_ID_1);
+        (bytes32 psOrderId,,,,) = lp.pendingSettlements(ORDER_ID_1);
         assertEq(psOrderId, ORDER_ID_1);
     }
 
@@ -462,14 +462,14 @@ contract LiquidityProviderTest is Test {
     }
 
     function testEmergencyRefund() public {
-        vm.prank(admin1);
-        lm.pause();
-
         Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
         usdc.approve(address(lp), 10_000e6);
 
         vm.prank(relayer);
         lp.createOrder(params);
+
+        vm.prank(admin1);
+        lm.pause();
 
         vm.prank(relayer);
         lp.emergencyRefund(ORDER_ID_1);
@@ -492,14 +492,14 @@ contract LiquidityProviderTest is Test {
     }
 
     function testEmergencyRefundRevertsIfNotRelayer() public {
-        vm.prank(admin1);
-        lm.pause();
-
         Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
         usdc.approve(address(lp), 10_000e6);
 
         vm.prank(relayer);
         lp.createOrder(params);
+
+        vm.prank(admin1);
+        lm.pause();
 
         vm.prank(nonAdmin);
         vm.expectRevert();
@@ -507,19 +507,20 @@ contract LiquidityProviderTest is Test {
     }
 
     function testEmergencyRefundRevertsIfAlreadyFulfilled() public {
-        vm.prank(admin1);
-        lm.pause();
-
         Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
         usdc.approve(address(lp), 10_000e6);
 
         vm.startPrank(relayer);
         lp.createOrder(params);
         lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS);
+        vm.stopPrank();
 
+        vm.prank(admin1);
+        lm.pause();
+
+        vm.prank(relayer);
         vm.expectRevert();
         lp.emergencyRefund(ORDER_ID_1);
-        vm.stopPrank();
     }
 
     function testGetTokenBalance() public view {
@@ -591,16 +592,17 @@ contract LiquidityProviderTest is Test {
 
         // Settle 50%
         lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS / 2);
+        vm.stopPrank();
 
         vm.prank(tempWallet);
         lp.executeSettlementTransfer(ORDER_ID_1, address(usdc));
 
         // Now refund remaining
+        vm.prank(relayer);
         lp.refund(ORDER_ID_1);
 
         vm.prank(tempWallet);
         lp.executeRefundTransfer(ORDER_ID_1, address(usdc));
-        vm.stopPrank();
 
         Types.Order memory order = lp.getOrderInfo(ORDER_ID_1);
         assertTrue(order.isRefunded);

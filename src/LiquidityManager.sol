@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "../interfaces/ILiquidityManager.sol";
+import "./interfaces/ILiquidityManager.sol";
 
 error InvalidFeePercentLM();
 error ZeroAddressLM();
 error AddressAlreadySetLM();
 error UnauthorizedLM();
-error NoPendingAdmin();
-error AdminSlotConflict();
-error ContractAlreadyInitialized();
+error NoPendingAdminLM();
+error AdminSlotConflictLM();
+error ContractAlreadyInitializedLM();
+error InvalidParameterLM();
 
 contract LiquidityManager is ILiquidityManager {
     address public admin1;
@@ -33,13 +34,18 @@ contract LiquidityManager is ILiquidityManager {
         _;
     }
 
+    modifier onlyAdmin2() {
+        if (msg.sender != admin2) revert UnauthorizedLM();
+        _;
+    }
+
     modifier onlyPendingAdmin1() {
-        if (msg.sender != pendingAdmin1) revert NoPendingAdmin();
+        if (msg.sender != pendingAdmin1) revert NoPendingAdminLM();
         _;
     }
 
     modifier onlyPendingAdmin2() {
-        if (msg.sender != pendingAdmin2) revert NoPendingAdmin();
+        if (msg.sender != pendingAdmin2) revert NoPendingAdminLM();
         _;
     }
 
@@ -53,7 +59,7 @@ contract LiquidityManager is ILiquidityManager {
         address _treasury,
         address _relayerAddress
     ) external {
-        if (_initialized) revert ContractAlreadyInitialized();
+        if (_initialized) revert ContractAlreadyInitializedLM();
         if (_admin1 == address(0) || _admin2 == address(0) || _treasury == address(0) || _relayerAddress == address(0)) {
             revert ZeroAddressLM();
         }
@@ -66,7 +72,7 @@ contract LiquidityManager is ILiquidityManager {
     }
 
     function transferAdmin1(address newAdmin) external override onlyAdmin1 {
-        if (newAdmin == admin2) revert AdminSlotConflict();
+        if (newAdmin == admin2) revert AdminSlotConflictLM();
         if (newAdmin == admin1) revert AddressAlreadySetLM();
         pendingAdmin1 = newAdmin;
         emit AdminTransferProposed(1, newAdmin);
@@ -79,7 +85,7 @@ contract LiquidityManager is ILiquidityManager {
     }
 
     function transferAdmin2(address newAdmin) external override onlyAdmin2 {
-        if (newAdmin == admin1) revert AdminSlotConflict();
+        if (newAdmin == admin1) revert AdminSlotConflictLM();
         if (newAdmin == admin2) revert AddressAlreadySetLM();
         pendingAdmin2 = newAdmin;
         emit AdminTransferProposed(2, newAdmin);
@@ -100,7 +106,7 @@ contract LiquidityManager is ILiquidityManager {
             if (relayer == value) revert AddressAlreadySetLM();
             relayer = value;
         } else {
-            revert InvalidParameter();
+            revert InvalidParameterLM();
         }
         emit ProtocolAddressUpdated(what, value);
     }
@@ -133,6 +139,10 @@ contract LiquidityManager is ILiquidityManager {
 
     function isTokenSupported(address token) external view override returns (bool) {
         return tokenSupported[token];
+    }
+
+    function isPaused() external view override returns (bool) {
+        return paused;
     }
 
     event ProtocolAddressUpdated(uint8 what, address value);
