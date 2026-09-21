@@ -2,11 +2,34 @@
 
 export PATH="$HOME/.foundry/bin:$PATH"
 
-PROJECT_DIR="/mnt/c/Users/SciPhii/Desktop/Centiiv/code/apps/protocol/arc-contracts"
-cd "$PROJECT_DIR"
+# --- Parse --network flag ---
+NETWORK="testnet"
+for arg in "$@"; do
+  case $arg in
+    --network=mainnet|--mainnet)
+      NETWORK="mainnet"
+      ;;
+    --network=testnet|--testnet)
+      NETWORK="testnet"
+      ;;
+  esac
+done
+
+if [ "$NETWORK" = "mainnet" ]; then
+  RPC_URL="https://rpc.mainnet.arc.io"
+  EXPLORER="https://arcscan.app"
+  FAUCET_MSG="  Fund this address with real USDC on Arc mainnet."
+  FAUCET_URL=""
+else
+  RPC_URL="https://rpc.testnet.arc.io"
+  EXPLORER="https://testnet.arcscan.app"
+  FAUCET_MSG="  Arc uses USDC as its native gas token."
+  FAUCET_URL="  Faucet: https://faucet.circle.com"
+fi
 
 echo "============================================"
 echo "  Arc Liquidity Protocol - Deploy Script"
+echo "  Network: $NETWORK"
 echo "============================================"
 echo ""
 
@@ -133,6 +156,8 @@ fi
 echo "============================================"
 echo "  Deployment Config"
 echo "============================================"
+echo "  Network:   $NETWORK"
+echo "  RPC:       $RPC_URL"
 echo "  Deployer:  $DEPLOYER_ADDR"
 echo "  Admin 1:   $ADMIN1"
 echo "  Admin 2:   $ADMIN2"
@@ -143,8 +168,8 @@ echo "============================================"
 echo ""
 
 # --- Check balance ---
-echo "[3/4] Checking balance on Arc testnet..."
-BALANCE=$(cast balance "$DEPLOYER_ADDR" --rpc-url https://rpc.testnet.arc.io 2>&1) || true
+echo "[3/4] Checking balance on Arc $NETWORK..."
+BALANCE=$(cast balance "$DEPLOYER_ADDR" --rpc-url "$RPC_URL" 2>&1) || true
 
 echo "  Deployer balance: $BALANCE USDC (native gas)"
 echo ""
@@ -154,14 +179,16 @@ if echo "$BALANCE" | grep -qE "^0$"; then
   echo "  !!! NO GAS !!!"
   echo "============================================"
   echo ""
-  echo "  Arc uses USDC as its native gas token."
-  echo "  Fund this address with USDC testnet:"
+  echo "$FAUCET_MSG"
+  echo "  Fund this address with USDC:"
   echo "  $DEPLOYER_ADDR"
   echo ""
-  echo "  Faucet: https://faucet.circle.com"
-  echo "  (select Arc Testnet)"
-  echo ""
-  echo "  Then re-run: bash deploy.sh"
+  if [ -n "$FAUCET_URL" ]; then
+    echo "$FAUCET_URL"
+    echo "  (select Arc Testnet)"
+    echo ""
+  fi
+  echo "  Then re-run: bash deploy.sh --$NETWORK"
   echo ""
 else
   echo "============================================"
@@ -179,7 +206,7 @@ else
   forge build
 
   forge script script/Deploy.s.sol \
-    --rpc-url https://rpc.testnet.arc.io \
+    --rpc-url "$RPC_URL" \
     --private-key "$PRIVATE_KEY" \
     --broadcast \
     -vvv
@@ -190,7 +217,7 @@ else
   echo "============================================"
   echo ""
   echo "  All private keys saved in: $PROJECT_DIR/.env"
-  echo "  Explorer: https://testnet.arcscan.app"
+  echo "  Explorer: $EXPLORER"
   echo ""
   echo "  Admin functions you can now test:"
   echo "    pause() / unpause()         — either admin"
