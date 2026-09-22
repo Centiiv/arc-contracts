@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import "../src/LiquidityManager.sol";
 import "../src/LiquidityProvider.sol";
+import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 
 contract DeployScript is Script {
     function run() external {
@@ -16,15 +17,46 @@ contract DeployScript is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        LiquidityManager lm = new LiquidityManager();
-        lm.initialize(admin1, admin2, treasury, relayer);
+        LiquidityManager lmImpl = new LiquidityManager();
+        LiquidityProvider lpImpl = new LiquidityProvider();
 
-        LiquidityProvider lp = new LiquidityProvider();
-        lp.initialize(usdc, address(lm));
+        bytes memory lmInit = abi.encodeCall(
+            LiquidityManager.initialize,
+            (admin1, admin2, treasury, relayer)
+        );
+        TransparentUpgradeableProxy lmProxy = new TransparentUpgradeableProxy(
+            address(lmImpl),
+            admin1,
+            lmInit
+        );
+
+        bytes memory lpInit = abi.encodeCall(
+            LiquidityProvider.initialize,
+            (usdc, address(lmProxy))
+        );
+        TransparentUpgradeableProxy lpProxy = new TransparentUpgradeableProxy(
+            address(lpImpl),
+            admin1,
+            lpInit
+        );
 
         vm.stopBroadcast();
 
-        console.log("LiquidityManager deployed at:", address(lm));
-        console.log("LiquidityProvider deployed at:", address(lp));
+        console.log("LiquidityManager implementation:", address(lmImpl));
+        console.log("LiquidityManager proxy:         ", address(lmProxy));
+        console.log("LiquidityProvider implementation:", address(lpImpl));
+        console.log("LiquidityProvider proxy:         ", address(lpProxy));
+
+        bytes32 ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+        address lmProxyAdmin = address(uint160(uint256(vm.load(address(lmProxy), ADMIN_SLOT))));
+        address lpProxyAdmin = address(uint160(uint256(vm.load(address(lpProxy), ADMIN_SLOT))));
+
+        console.log("LM ProxyAdmin:                  ", lmProxyAdmin);
+        console.log("LP ProxyAdmin:                  ", lpProxyAdmin);
+        console.log("");
+        console.log("Save these for .env.upgrade:");
+        console.log("  PROXY_ADMIN=%s", lmProxyAdmin);
+        console.log("  LM_PROXY=%s", address(lmProxy));
+        console.log("  LP_PROXY=%s", address(lpProxy));
     }
 }

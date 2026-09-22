@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./interfaces/ILiquidityManager.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 error InvalidFeePercentLM();
 error ZeroAddressLM();
@@ -12,7 +13,7 @@ error AdminSlotConflictLM();
 error ContractAlreadyInitializedLM();
 error InvalidParameterLM();
 
-contract LiquidityManager is ILiquidityManager {
+contract LiquidityManager is ILiquidityManager, Initializable {
     address public admin1;
     address public admin2;
     address public pendingAdmin1;
@@ -22,7 +23,7 @@ contract LiquidityManager is ILiquidityManager {
     bool public paused;
     mapping(address => bool) public tokenSupported;
 
-    bool private _initialized;
+    uint256 private __gap;
 
     modifier onlyAdmin() {
         if (msg.sender != admin1 && msg.sender != admin2) revert UnauthorizedLM();
@@ -50,7 +51,7 @@ contract LiquidityManager is ILiquidityManager {
     }
 
     constructor() {
-        _initialized = false;
+        _disableInitializers();
     }
 
     function initialize(
@@ -58,8 +59,7 @@ contract LiquidityManager is ILiquidityManager {
         address _admin2,
         address _treasury,
         address _relayerAddress
-    ) external {
-        if (_initialized) revert ContractAlreadyInitializedLM();
+    ) external initializer {
         if (_admin1 == address(0) || _admin2 == address(0) || _treasury == address(0) || _relayerAddress == address(0)) {
             revert ZeroAddressLM();
         }
@@ -68,7 +68,6 @@ contract LiquidityManager is ILiquidityManager {
         treasury = _treasury;
         relayer = _relayerAddress;
         paused = false;
-        _initialized = true;
     }
 
     function transferAdmin1(address newAdmin) external override onlyAdmin1 {

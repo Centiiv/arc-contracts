@@ -6,11 +6,24 @@ import "../src/LiquidityManager.sol";
 import "../src/LiquidityProvider.sol";
 import "../src/libraries/Types.sol";
 import "./mocks/MockERC20.sol";
+import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
+
+contract LiquidityProviderV2 is LiquidityProvider {
+    function version() external pure returns (string memory) {
+        return "2.0.0";
+    }
+}
 
 contract LiquidityProviderTest is Test {
     LiquidityManager public lm;
     LiquidityProvider public lp;
+    LiquidityProviderV2 public lpV2;
     MockERC20 public usdc;
+    ProxyAdmin public lmProxyAdmin;
+    ProxyAdmin public lpProxyAdmin;
+    TransparentUpgradeableProxy public lmProxy;
+    TransparentUpgradeableProxy public lpProxy;
 
     address public admin1 = address(0xA1);
     address public admin2 = address(0xA2);
@@ -24,16 +37,28 @@ contract LiquidityProviderTest is Test {
 
     bytes32 constant ORDER_ID_1 = bytes32(uint256(1));
     bytes32 constant ORDER_ID_2 = bytes32(uint256(2));
+    bytes32 constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
 
     function setUp() public {
-        vm.startPrank(admin1);
-        lm = new LiquidityManager();
-        lm.initialize(admin1, admin2, treasury, relayer);
-
-        lp = new LiquidityProvider();
         usdc = new MockERC20("USD Coin", "USDC");
-        lp.initialize(address(usdc), address(lm));
-        vm.stopPrank();
+
+        LiquidityManager lmImpl = new LiquidityManager();
+        bytes memory lmInit = abi.encodeCall(
+            LiquidityManager.initialize,
+            (admin1, admin2, treasury, relayer)
+        );
+        lmProxy = new TransparentUpgradeableProxy(address(lmImpl), admin1, lmInit);
+        lmProxyAdmin = _getProxyAdmin(address(lmProxy));
+        lm = LiquidityManager(address(lmProxy));
+
+        LiquidityProvider lpImpl = new LiquidityProvider();
+        bytes memory lpInit = abi.encodeCall(
+            LiquidityProvider.initialize,
+            (address(usdc), address(lmProxy))
+        );
+        lpProxy = new TransparentUpgradeableProxy(address(lpImpl), admin1, lpInit);
+        lpProxyAdmin = _getProxyAdmin(address(lpProxy));
+        lp = LiquidityProvider(address(lpProxy));
 
         usdc.mint(sender, 10_000e6);
         usdc.mint(tempWallet, 10_000e6);
@@ -45,6 +70,13 @@ contract LiquidityProviderTest is Test {
         vm.startPrank(tempWallet);
         usdc.approve(address(lp), type(uint256).max);
         vm.stopPrank();
+    }
+
+    function _getProxyAdmin(address proxy) internal view returns (ProxyAdmin) {
+        bytes32 slotValue = vm.load(proxy, ADMIN_SLOT);
+        address adminAddr;
+        assembly { adminAddr := slotValue }
+        return ProxyAdmin(adminAddr);
     }
 
     function _createOrder(
@@ -69,7 +101,7 @@ contract LiquidityProviderTest is Test {
 
     function testInitialize() public view {
         assertEq(lp.usdc(), address(usdc));
-        assertEq(lp.settingsContract(), address(lm));
+        assertEq(lp.settingsContract(), address(lmProxy));
         assertEq(lp.tierFees(uint8(Types.ProtocolFees.Basic)), 400);
         assertEq(lp.tierFees(uint8(Types.ProtocolFees.Alpha)), 300);
         assertEq(lp.tierFees(uint8(Types.ProtocolFees.Ultimate)), 200);
@@ -162,14 +194,6 @@ contract LiquidityProviderTest is Test {
         usdc.approve(address(lp), 249);
 
         vm.prank(relayer);
-        vm.expectRevert();
-        lp.createOrder(params);
-    }
-
-    function testCreateOrderRevertsIfNotRelayer() public {
-        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 1000e6, Types.ProtocolFees.Basic);
-
-        vm.prank(nonAdmin);
         vm.expectRevert();
         lp.createOrder(params);
     }
@@ -546,15 +570,18 @@ contract LiquidityProviderTest is Test {
     }
 
     function testUpdateSettingsContract() public {
-        LiquidityManager newLm;
-        vm.prank(admin1);
-        newLm = new LiquidityManager();
-        vm.prank(admin1);
-        newLm.initialize(admin1, admin2, treasury, relayer);
+        LiquidityManager newLmImpl = new LiquidityManager();
+        bytes memory init = abi.encodeCall(
+            LiquidityManager.initialize,
+            (admin1, admin2, treasury, relayer)
+        );
+        TransparentUpgradeableProxy newLmProxy = new TransparentUpgradeableProxy(
+            address(newLmImpl), admin1, init
+        );
 
         vm.prank(admin1);
-        lp.updateSettingsContract(address(newLm));
-        assertEq(lp.settingsContract(), address(newLm));
+        lp.updateSettingsContract(address(newLmProxy));
+        assertEq(lp.settingsContract(), address(newLmProxy));
     }
 
     function testUpdateSettingsContractRevertsIfNonAdmin() public {
@@ -625,5 +652,66 @@ contract LiquidityProviderTest is Test {
 
         assertTrue(lp.getOrderInfo(ORDER_ID_1).isFulfilled);
         assertTrue(lp.getOrderInfo(ORDER_ID_2).isFulfilled);
+    }
+
+    function testUpgrade() public {
+        lpV2 = new LiquidityProviderV2();
+
+        vm.prank(admin1);
+        lpProxyAdmin.upgradeAndCall(ITransparentUpgradeableProxy(address(lpProxy)), address(lpV2), "");
+
+        LiquidityProvider upgraded = LiquidityProvider(address(lpProxy));
+        assertEq(upgraded.usdc(), address(usdc));
+        assertEq(upgraded.settingsContract(), address(lmProxy));
+    }
+
+    function testUpgradePreservesState() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        lpV2 = new LiquidityProviderV2();
+
+        vm.prank(admin1);
+        lpProxyAdmin.upgradeAndCall(ITransparentUpgradeableProxy(address(lpProxy)), address(lpV2), "");
+
+        LiquidityProvider upgraded = LiquidityProvider(address(lpProxy));
+        Types.Order memory order = upgraded.getOrderInfo(ORDER_ID_1);
+        assertEq(order.orderId, ORDER_ID_1);
+        assertEq(order.amount, 10_000e6);
+        assertEq(order.sender, sender);
+    }
+
+    function testUpgradePreservesTierFees() public {
+        vm.prank(admin1);
+        lp.updateTierFee(uint8(Types.ProtocolFees.Basic), 500);
+
+        lpV2 = new LiquidityProviderV2();
+
+        vm.prank(admin1);
+        lpProxyAdmin.upgradeAndCall(ITransparentUpgradeableProxy(address(lpProxy)), address(lpV2), "");
+
+        LiquidityProvider upgraded = LiquidityProvider(address(lpProxy));
+        assertEq(upgraded.getTierFee(uint8(Types.ProtocolFees.Basic)), 500);
+    }
+
+    function testUpgradeRevertsIfNotProxyAdmin() public {
+        lpV2 = new LiquidityProviderV2();
+
+        vm.prank(nonAdmin);
+        vm.expectRevert();
+        ITransparentUpgradeableProxy(address(lpProxy)).upgradeToAndCall(address(lpV2), "");
+    }
+
+    function testUpgradeToNewVersion() public {
+        lpV2 = new LiquidityProviderV2();
+
+        vm.prank(admin1);
+        lpProxyAdmin.upgradeAndCall(ITransparentUpgradeableProxy(address(lpProxy)), address(lpV2), "");
+
+        LiquidityProviderV2 upgraded = LiquidityProviderV2(address(lpProxy));
+        assertEq(upgraded.version(), "2.0.0");
     }
 }

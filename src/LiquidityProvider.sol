@@ -3,9 +3,11 @@ pragma solidity ^0.8.20;
 
 import "./interfaces/IERC20.sol";
 import "./interfaces/ILiquidityManager.sol";
+import "./interfaces/ILiquidityProvider.sol";
 import "./libraries/Types.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
-contract LiquidityProvider {
+contract LiquidityProvider is ILiquidityProvider, Initializable {
     using Types for *;
 
     address public settingsContract;
@@ -15,7 +17,7 @@ contract LiquidityProvider {
     mapping(bytes32 => Types.PendingRefund) public pendingRefunds;
     mapping(uint8 => int256) public tierFees;
 
-    bool private _initialized;
+    uint256 private __gap;
 
     modifier onlyRelayer() {
         address _relayer = ILiquidityManager(settingsContract).getRelayerAddress();
@@ -40,8 +42,11 @@ contract LiquidityProvider {
         _;
     }
 
-    function initialize(address _usdc, address _settingsContract) external {
-        if (_initialized) revert ContractAlreadyInitialized();
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address _usdc, address _settingsContract) external initializer {
         if (_usdc == address(0) || _settingsContract == address(0)) revert ZeroAddress();
 
         usdc = _usdc;
@@ -49,7 +54,6 @@ contract LiquidityProvider {
         tierFees[uint8(Types.ProtocolFees.Basic)] = 400;
         tierFees[uint8(Types.ProtocolFees.Alpha)] = 300;
         tierFees[uint8(Types.ProtocolFees.Ultimate)] = 200;
-        _initialized = true;
     }
 
     function createOrder(Types.OrderParams calldata params) external whenNotPaused {
