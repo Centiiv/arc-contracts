@@ -21,6 +21,11 @@ Both contracts are deployed behind **upgradeable proxies** (OpenZeppelin Transpa
 
 Fees use ceiling division (protocol never loses on rounding) and are snapshotted per order at creation.
 
+The snapshotted rate is a **cap, not a fixed charge**. `settle()` comes in two forms:
+
+- `settle(orderId, liquidityProvider, settlePercent)` — no fee argument; charges the rate snapshotted at creation (original behavior, fully backward compatible).
+- `settle(orderId, liquidityProvider, settlePercent, appliedFeeBps)` — optional override; the contract enforces `0 <= appliedFeeBps <= order.feeBps`, allowing discounted (even zero) fees per settlement — e.g. to reward specific LPs — while making it impossible to ever charge more than the rate quoted at creation. The applied rate is emitted in the `OrderSettled` event.
+
 ## Architecture
 
 ### Upgradeability
@@ -68,13 +73,13 @@ ProxyAdmin(proxyAdminAddr).upgradeAndCall(
 
 ### Two-Step Settlement
 
-1. **Step 1 (State Update)** — Relayer calls `settle()`. Updates order state, writes `PendingSettlement` to storage. No tokens move.
-2. **Step 2 (Token Transfer)** — Temporary wallet calls `executeSettlementTransfer()`. Transfers USDC to LP node and treasury. Deletes pending record.
+1. **Step 1 (State Update)** — Relayer calls `settle(orderId, liquidityProvider, settlePercent)` — or the 4-arg overload with an `appliedFeeBps` at or below the fee snapshotted at creation. Updates order state, computes the fee, writes `PendingSettlement` to storage. No tokens move.
+2. **Step 2 (Token Transfer)** — Relayer (or LP node / temporary wallet) calls `executeSettlementTransfer()` with an optional EIP-2612 permit for the temporary wallet's allowance. Transfers USDC to LP node and treasury. Deletes pending record.
 
 ### Two-Step Refund
 
 1. **Step 1 (State Update)** — Relayer calls `refund()`. Marks order refunded, writes `PendingRefund`. No tokens move.
-2. **Step 2 (Token Transfer)** — Temporary wallet calls `executeRefundTransfer()`. Returns full amount to refund address.
+2. **Step 2 (Token Transfer)** — Relayer, refund address (or temporary wallet) calls `executeRefundTransfer()`. Returns full amount to refund address.
 
 ### Emergency Refund
 
@@ -82,9 +87,10 @@ Relayer calls `emergencyRefund()` while contract is paused. Full amount returned
 
 ## Auth Model
 
-- **Relayer** — Authorizes order creation, settlement, refund, and emergency refund (`msg.sender` check)
-- **Sender** — Pre-approves LP contract via `IERC20.approve()` for token transfers
-- **Temp Wallet** — Pre-approves LP contract, then calls `executeSettlementTransfer()` / `executeRefundTransfer()`
+- **Relayer** — Authorizes settlement, refund, and emergency refund; chooses the applied fee rate at settlement (capped by the creation-time snapshot)
+- **Sender** — Pre-approves LP contract via `IERC20.approve()` for order creation
+- **Temp Wallet** — Holds order funds; authorizes funding (`createOrder`) and settlement/refund transfers via off-chain EIP-2612 permit signatures — it never sends a transaction and never pays gas
+- **LP Node / Refund Address / Relayer** — Can execute the recorded settlement (`executeSettlementTransfer`) and refund (`executeRefundTransfer`) transfers
 - **Admin1/Admin2** — Either admin can pause, unpause, update addresses, update fee tiers
 - **ProxyAdmin Owner (admin1)** — Can upgrade implementation contracts via ProxyAdmin
 
@@ -104,7 +110,7 @@ test/
 ├── mocks/
 │   └── MockERC20.sol            # Mock USDC
 ├── LiquidityManager.t.sol       # 27 tests (incl. upgradeability)
-├── LiquidityProvider.t.sol      # 47 tests (incl. upgradeability)
+├── LiquidityProvider.t.sol      # 60 tests (incl. upgradeability, fee cap)
 script/
 ├── Deploy.s.sol                 # Proxy deployment script
 ├── Upgrade.s.sol                # Proxy upgrade script
@@ -263,5 +269,5 @@ forge script script/Deploy.s.sol \
 - **RPC**: `https://rpc.testnet.arc.io` / `https://rpc.mainnet.arc.io`
 - **Explorer**: `https://testnet.arcscan.app` / `https://arcscan.app`
 - Use 6-decimal ERC-20 values for all application-level transfers and math
-- All token transfers use `IERC20.transferFrom()` — temp wallet must approve LP contract
+- All token transfers use `IERC20.transferFrom()` — the owner either pre-approves the LP contract or attaches an EIP-2612 `PermitSig` (relayer/LP submits and pays gas)
 - Transfers to `address(0)` revert at protocol level

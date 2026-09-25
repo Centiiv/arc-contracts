@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./interfaces/IERC20.sol";
+import "./interfaces/IERC20Permit.sol";
 import "./interfaces/ILiquidityManager.sol";
 import "./interfaces/ILiquidityProvider.sol";
 import "./libraries/Types.sol";
@@ -72,6 +73,8 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
 
         int256 protocolFeeAmount = _calculateProtocolFee(params.amount, params.protocolFee);
 
+        _permitIfProvided(params.token, params.sender, uint256(params.amount), params.permitSig);
+
         IERC20(params.token).transferFrom(params.sender, params.temporaryWalletAddress, uint256(params.amount));
 
         int256 feeBps = tierFees[uint8(params.protocolFee)];
@@ -97,11 +100,32 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         emit OrderCreated(params.orderId, params.sender, params.amount, protocolFeeAmount, params.rate, params.messageHash);
     }
 
+    /// @notice Settle using the fee rate snapshotted at order creation (the cap).
     function settle(
         bytes32 orderId,
         address liquidityProvider,
         int256 settlePercent
     ) external whenNotPaused returns (bool) {
+        return _settle(orderId, liquidityProvider, settlePercent, orders[orderId].feeBps);
+    }
+
+    /// @notice Settle with an optional fee override. appliedFeeBps must be
+    ///         0 <= appliedFeeBps <= the fee rate snapshotted at order creation.
+    function settle(
+        bytes32 orderId,
+        address liquidityProvider,
+        int256 settlePercent,
+        int256 appliedFeeBps
+    ) external whenNotPaused returns (bool) {
+        return _settle(orderId, liquidityProvider, settlePercent, appliedFeeBps);
+    }
+
+    function _settle(
+        bytes32 orderId,
+        address liquidityProvider,
+        int256 settlePercent,
+        int256 appliedFeeBps
+    ) internal returns (bool) {
         if (pendingSettlements[orderId].orderId != bytes32(0)) revert PendingSettlementExists();
 
         address _relayer = ILiquidityManager(settingsContract).getRelayerAddress();
@@ -115,6 +139,7 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         if (order.isFulfilled) revert OrderFulfilled();
         if (order.isRefunded) revert OrderRefunded();
         if (settlePercent > order.currentBps) revert InvalidSettlePercent();
+        if (appliedFeeBps < 0 || appliedFeeBps > order.feeBps) revert FeeExceedsCap();
 
         int256 currentOrderBps = order.currentBps;
         order.currentBps -= settlePercent;
@@ -124,7 +149,7 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
 
         order.amount -= liquidityProviderAmount;
 
-        int256 protocolFee = _calculateProtocolFeeFromBps(liquidityProviderAmount, order.feeBps);
+        int256 protocolFee = _calculateProtocolFeeFromBps(liquidityProviderAmount, appliedFeeBps);
         order.feesCollected += protocolFee;
 
         int256 transferAmount = liquidityProviderAmount - protocolFee;
@@ -141,18 +166,31 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
             settlePercent: settlePercent
         });
 
-        emit OrderSettled(orderId, liquidityProvider, settlePercent);
+        emit OrderSettled(orderId, liquidityProvider, settlePercent, appliedFeeBps);
         return true;
     }
 
-    function executeSettlementTransfer(bytes32 orderId, address tokenAddress) external {
+    function executeSettlementTransfer(
+        bytes32 orderId,
+        address tokenAddress,
+        Types.PermitSig calldata permitSig
+    ) external {
         Types.Order storage order = orders[orderId];
         if (order.orderId == bytes32(0)) revert OrderNotFound();
-
-        if (msg.sender != order.temporaryWalletAddress) revert Unauthorized();
+        if (tokenAddress != order.token) revert InvalidParameter();
 
         Types.PendingSettlement memory ps = pendingSettlements[orderId];
         if (ps.orderId == bytes32(0)) revert NoPendingSettlement();
+
+        address _relayer = ILiquidityManager(settingsContract).getRelayerAddress();
+        if (
+            msg.sender != ps.liquidityProvider &&
+            msg.sender != _relayer &&
+            msg.sender != order.temporaryWalletAddress
+        ) revert Unauthorized();
+
+        uint256 totalAmount = uint256(ps.protocolFee) + uint256(ps.transferAmount);
+        _permitIfProvided(tokenAddress, order.temporaryWalletAddress, totalAmount, permitSig);
 
         address _treasury = ILiquidityManager(settingsContract).getTreasuryAddress();
 
@@ -192,20 +230,50 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         emit OrderRefundedEvent(orderId);
     }
 
-    function executeRefundTransfer(bytes32 orderId, address tokenAddress) external {
+    function executeRefundTransfer(
+        bytes32 orderId,
+        address tokenAddress,
+        Types.PermitSig calldata permitSig
+    ) external {
         Types.Order storage order = orders[orderId];
         if (order.orderId == bytes32(0)) revert OrderNotFound();
-
-        if (msg.sender != order.temporaryWalletAddress) revert Unauthorized();
+        if (tokenAddress != order.token) revert InvalidParameter();
 
         Types.PendingRefund memory pr = pendingRefunds[orderId];
         if (pr.orderId == bytes32(0)) revert NoPendingRefund();
+
+        address _relayer = ILiquidityManager(settingsContract).getRelayerAddress();
+        if (
+            msg.sender != order.refundAddress &&
+            msg.sender != _relayer &&
+            msg.sender != order.temporaryWalletAddress
+        ) revert Unauthorized();
+
+        _permitIfProvided(tokenAddress, order.temporaryWalletAddress, uint256(pr.refundAmount), permitSig);
 
         IERC20(tokenAddress).transferFrom(order.temporaryWalletAddress, order.refundAddress, uint256(pr.refundAmount));
 
         delete pendingRefunds[orderId];
 
         emit RefundTransferred(orderId, pr.refundAmount);
+    }
+
+    function _permitIfProvided(
+        address token,
+        address owner,
+        uint256 value,
+        Types.PermitSig calldata permitSig
+    ) internal {
+        if (permitSig.r == bytes32(0)) return;
+        IERC20Permit(token).permit(
+            owner,
+            address(this),
+            value,
+            permitSig.deadline,
+            permitSig.v,
+            permitSig.r,
+            permitSig.s
+        );
     }
 
     function emergencyRefund(bytes32 orderId) external whenPaused {
@@ -297,7 +365,7 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
     }
 
     event OrderCreated(bytes32 indexed orderId, address indexed sender, int256 amount, int256 protocolFee, int256 rate, bytes32 messageHash);
-    event OrderSettled(bytes32 indexed orderId, address indexed liquidityProvider, int256 settlePercent);
+    event OrderSettled(bytes32 indexed orderId, address indexed liquidityProvider, int256 settlePercent, int256 appliedFeeBps);
     event SettlementTransferred(bytes32 indexed orderId, int256 settlePercent);
     event OrderRefundedEvent(bytes32 indexed orderId);
     event RefundTransferred(bytes32 indexed orderId, int256 refundAmount);

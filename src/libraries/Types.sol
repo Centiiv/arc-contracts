@@ -36,6 +36,7 @@ library Types {
         address refundAddress;
         bytes32 messageHash;
         ProtocolFees protocolFee;
+        PermitSig permitSig;
     }
 
     struct PendingSettlement {
@@ -50,6 +51,13 @@ library Types {
         bytes32 orderId;
         int256 refundAmount;
     }
+
+    struct PermitSig {
+        uint256 deadline;
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
+    }
 }
 
 error InvalidAmount();
@@ -62,6 +70,7 @@ error OrderNotFound();
 error OrderFulfilled();
 error OrderRefunded();
 error FeeExceedsProtocolFee();
+error FeeExceedsCap();
 error Paused();
 error Unauthorized();
 error TransferFailed();
