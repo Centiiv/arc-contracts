@@ -1,4 +1,16 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: UNLICENSED
+// © 2026 Centiiv Technologies. All rights reserved.
+//
+// NOTICE: All information contained herein is, and remains the property of
+// Centiiv Technologies. The intellectual and technical concepts contained
+// herein are proprietary to Centiiv Technologies and are protected by trade
+// secret, copyright, and other applicable laws.
+//
+// Dissemination, reproduction, modification, copying, or reverse engineering
+// of this material in whole or in part is strictly forbidden unless prior
+// written permission is obtained from Centiiv Technologies.
+
+
 pragma solidity ^0.8.20;
 
 import "./interfaces/ILiquidityManager.sol";
@@ -63,6 +75,7 @@ contract LiquidityManager is ILiquidityManager, Initializable {
         if (_admin1 == address(0) || _admin2 == address(0) || _treasury == address(0) || _relayerAddress == address(0)) {
             revert ZeroAddressLM();
         }
+        if (_admin1 == _admin2) revert AdminSlotConflictLM();
         admin1 = _admin1;
         admin2 = _admin2;
         treasury = _treasury;
@@ -78,6 +91,7 @@ contract LiquidityManager is ILiquidityManager, Initializable {
     }
 
     function acceptAdmin1() external override onlyPendingAdmin1 {
+        if (pendingAdmin1 == admin2) revert AdminSlotConflictLM();
         admin1 = pendingAdmin1;
         delete pendingAdmin1;
         emit AdminTransferred(1, msg.sender);
@@ -91,6 +105,7 @@ contract LiquidityManager is ILiquidityManager, Initializable {
     }
 
     function acceptAdmin2() external override onlyPendingAdmin2 {
+        if (pendingAdmin2 == admin1) revert AdminSlotConflictLM();
         admin2 = pendingAdmin2;
         delete pendingAdmin2;
         emit AdminTransferred(2, msg.sender);

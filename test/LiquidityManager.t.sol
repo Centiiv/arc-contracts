@@ -1,4 +1,16 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: UNLICENSED
+// © 2026 Centiiv Technologies. All rights reserved.
+//
+// NOTICE: All information contained herein is, and remains the property of
+// Centiiv Technologies. The intellectual and technical concepts contained
+// herein are proprietary to Centiiv Technologies and are protected by trade
+// secret, copyright, and other applicable laws.
+//
+// Dissemination, reproduction, modification, copying, or reverse engineering
+// of this material in whole or in part is strictly forbidden unless prior
+// written permission is obtained from Centiiv Technologies.
+
+
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
@@ -53,6 +65,17 @@ contract LiquidityManagerTest is Test {
         vm.expectRevert();
         vm.prank(admin1);
         lm.initialize(admin1, admin2, treasury, relayer);
+    }
+
+    function testInitializeRevertsIfAdminsEqual() public {
+        LiquidityManager lmImpl = new LiquidityManager();
+        bytes memory init = abi.encodeCall(
+            LiquidityManager.initialize,
+            (admin1, admin1, treasury, relayer)
+        );
+
+        vm.expectRevert(AdminSlotConflictLM.selector);
+        new TransparentUpgradeableProxy(address(lmImpl), admin1, init);
     }
 
     function testPause() public {
@@ -129,6 +152,25 @@ contract LiquidityManagerTest is Test {
         lm.acceptAdmin1();
     }
 
+    function testAcceptAdmin1RevertsIfPendingIsAdmin2() public {
+        vm.prank(admin1);
+        lm.transferAdmin1(newAdmin);
+        assertEq(lm.pendingAdmin1(), newAdmin);
+
+        vm.prank(admin2);
+        lm.transferAdmin2(newAdmin);
+        vm.prank(newAdmin);
+        lm.acceptAdmin2();
+        assertEq(lm.getAdmin2(), newAdmin);
+
+        vm.prank(newAdmin);
+        vm.expectRevert(AdminSlotConflictLM.selector);
+        lm.acceptAdmin1();
+
+        assertEq(lm.getAdmin1(), admin1);
+        assertEq(lm.pendingAdmin1(), newAdmin);
+    }
+
     function testTransferAdmin2() public {
         vm.prank(admin2);
         lm.transferAdmin2(newAdmin);
@@ -153,6 +195,25 @@ contract LiquidityManagerTest is Test {
         vm.prank(admin2);
         vm.expectRevert();
         lm.transferAdmin2(admin1);
+    }
+
+    function testAcceptAdmin2RevertsIfPendingIsAdmin1() public {
+        vm.prank(admin2);
+        lm.transferAdmin2(newAdmin);
+        assertEq(lm.pendingAdmin2(), newAdmin);
+
+        vm.prank(admin1);
+        lm.transferAdmin1(newAdmin);
+        vm.prank(newAdmin);
+        lm.acceptAdmin1();
+        assertEq(lm.getAdmin1(), newAdmin);
+
+        vm.prank(newAdmin);
+        vm.expectRevert(AdminSlotConflictLM.selector);
+        lm.acceptAdmin2();
+
+        assertEq(lm.getAdmin2(), admin2);
+        assertEq(lm.pendingAdmin2(), newAdmin);
     }
 
     function testUpdateTreasury() public {

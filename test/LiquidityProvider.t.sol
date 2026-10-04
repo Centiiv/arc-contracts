@@ -1,4 +1,16 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: UNLICENSED
+// © 2026 Centiiv Technologies. All rights reserved.
+//
+// NOTICE: All information contained herein is, and remains the property of
+// Centiiv Technologies. The intellectual and technical concepts contained
+// herein are proprietary to Centiiv Technologies and are protected by trade
+// secret, copyright, and other applicable laws.
+//
+// Dissemination, reproduction, modification, copying, or reverse engineering
+// of this material in whole or in part is strictly forbidden unless prior
+// written permission is obtained from Centiiv Technologies.
+
+
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
@@ -245,6 +257,38 @@ contract LiquidityProviderTest is Test {
         vm.stopPrank();
     }
 
+    function testCreateOrderRevertsIfUnauthorizedCaller() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 1000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 1000e6);
+
+        vm.prank(nonAdmin);
+        vm.expectRevert(Unauthorized.selector);
+        lp.createOrder(params);
+    }
+
+    function testCreateOrderRevertsIfSenderTargetsForeignWallet() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 1000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 1000e6);
+
+        vm.prank(sender);
+        vm.expectRevert(InvalidParameter.selector);
+        lp.createOrder(params);
+    }
+
+    function testCreateOrderBySenderToOwnWallet() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 1000e6, Types.ProtocolFees.Basic);
+        params.temporaryWalletAddress = sender;
+        usdc.approve(address(lp), 1000e6);
+
+        vm.prank(sender);
+        lp.createOrder(params);
+
+        Types.Order memory order = lp.getOrderInfo(ORDER_ID_1);
+        assertEq(order.temporaryWalletAddress, sender);
+        assertEq(order.amount, 1000e6);
+        assertEq(usdc.balanceOf(sender), 10_000e6);
+    }
+
     function testCreateOrderRevertsIfZeroAmount() public {
         Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 0, Types.ProtocolFees.Basic);
 
@@ -313,11 +357,14 @@ contract LiquidityProviderTest is Test {
         );
 
         vm.prank(relayer);
-        vm.expectRevert("permit expired");
+        vm.expectRevert(TransferFailed.selector);
         lp.createOrder(params);
     }
 
     function testCreateOrderRevertsIfWrongPermitSigner() public {
+        vm.prank(sender);
+        usdc.approve(address(lp), 0);
+
         Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 1000e6, Types.ProtocolFees.Basic);
         // Signed with TEMP_WALLET_PK while owner is `sender` → recovery mismatch
         params.permitSig = _signPermit(
@@ -329,7 +376,7 @@ contract LiquidityProviderTest is Test {
         );
 
         vm.prank(relayer);
-        vm.expectRevert("invalid permit signature");
+        vm.expectRevert(TransferFailed.selector);
         lp.createOrder(params);
     }
 
@@ -343,6 +390,89 @@ contract LiquidityProviderTest is Test {
         vm.prank(relayer);
         vm.expectRevert("insufficient allowance");
         lp.createOrder(params);
+    }
+
+    function testCreateOrderSucceedsIfPermitFrontRun() public {
+        vm.prank(tempWallet);
+        usdc.approve(address(lp), 0);
+
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, tempWallet, 1000e6, Types.ProtocolFees.Basic);
+        params.permitSig = _signPermit(
+            address(usdc),
+            tempWallet,
+            address(lp),
+            1000e6,
+            block.timestamp + 1 hours
+        );
+
+        // Attacker front-runs the permit, consuming the nonce
+        usdc.permit(
+            tempWallet,
+            address(lp),
+            1000e6,
+            params.permitSig.deadline,
+            params.permitSig.v,
+            params.permitSig.r,
+            params.permitSig.s
+        );
+        assertEq(usdc.allowance(tempWallet, address(lp)), 1000e6);
+        assertEq(usdc.nonces(tempWallet), 1);
+
+        // The now-stale permit must be skipped, not re-applied
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        Types.Order memory order = lp.getOrderInfo(ORDER_ID_1);
+        assertEq(order.amount, 1000e6);
+        assertEq(usdc.nonces(tempWallet), 1);
+        assertEq(usdc.allowance(tempWallet, address(lp)), 0);
+    }
+
+    function testExecuteSettlementTransferSucceedsIfPermitFrontRun() public {
+        vm.prank(tempWallet);
+        usdc.approve(address(lp), 0);
+
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        vm.prank(sender);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.startPrank(relayer);
+        lp.createOrder(params);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS);
+        vm.stopPrank();
+
+        vm.prank(tempWallet);
+        usdc.approve(address(lp), 0);
+
+        (, int256 psProtocolFee, int256 psTransferAmount,,) = lp.pendingSettlements(ORDER_ID_1);
+        uint256 totalAmount = uint256(psProtocolFee) + uint256(psTransferAmount);
+        Types.PermitSig memory permitSig = _signPermit(
+            address(usdc),
+            tempWallet,
+            address(lp),
+            totalAmount,
+            block.timestamp + 1 hours
+        );
+
+        // Attacker front-runs the permit, consuming the nonce
+        usdc.permit(
+            tempWallet,
+            address(lp),
+            totalAmount,
+            permitSig.deadline,
+            permitSig.v,
+            permitSig.r,
+            permitSig.s
+        );
+        assertEq(usdc.nonces(tempWallet), 1);
+
+        vm.prank(lpNode);
+        lp.executeSettlementTransfer(ORDER_ID_1, address(usdc), permitSig);
+
+        assertEq(usdc.balanceOf(treasury), 40e6);
+        assertEq(usdc.balanceOf(lpNode), 10_000e6 - 40e6);
+        (bytes32 psOrderId,,,,) = lp.pendingSettlements(ORDER_ID_1);
+        assertEq(psOrderId, bytes32(0));
     }
 
     function testSettleFull() public {
@@ -750,6 +880,165 @@ contract LiquidityProviderTest is Test {
         lp.executeSettlementTransfer(ORDER_ID_1, address(usdc), _noPermit());
     }
 
+    function testCancelSettlementRestoresOrderState() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.startPrank(relayer);
+        lp.createOrder(params);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS / 2);
+        vm.stopPrank();
+
+        Types.Order memory beforeCancel = lp.getOrderInfo(ORDER_ID_1);
+        assertEq(beforeCancel.amount, 5_000e6);
+        assertEq(beforeCancel.currentBps, Types.MAX_BPS - Types.MAX_BPS / 2);
+        assertEq(beforeCancel.feesCollected, 20e6);
+
+        vm.expectEmit(true, false, false, true);
+        emit ILiquidityProvider.SettlementCancelled(ORDER_ID_1);
+        vm.prank(relayer);
+        lp.cancelSettlement(ORDER_ID_1);
+
+        (bytes32 psOrderId,,,,) = lp.pendingSettlements(ORDER_ID_1);
+        assertEq(psOrderId, bytes32(0));
+
+        Types.Order memory afterCancel = lp.getOrderInfo(ORDER_ID_1);
+        assertEq(afterCancel.amount, 10_000e6);
+        assertEq(afterCancel.currentBps, Types.MAX_BPS);
+        assertEq(afterCancel.feesCollected, 0);
+        assertFalse(afterCancel.isFulfilled);
+        assertFalse(afterCancel.isRefunded);
+    }
+
+    function testCancelSettlementByAdmin1() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.startPrank(relayer);
+        lp.createOrder(params);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS / 2);
+        vm.stopPrank();
+
+        vm.prank(admin1);
+        lp.cancelSettlement(ORDER_ID_1);
+
+        (bytes32 psOrderId,,,,) = lp.pendingSettlements(ORDER_ID_1);
+        assertEq(psOrderId, bytes32(0));
+        assertEq(lp.getOrderInfo(ORDER_ID_1).amount, 10_000e6);
+    }
+
+    function testCancelSettlementByAdmin2() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.startPrank(relayer);
+        lp.createOrder(params);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS / 2);
+        vm.stopPrank();
+
+        vm.prank(admin2);
+        lp.cancelSettlement(ORDER_ID_1);
+
+        (bytes32 psOrderId,,,,) = lp.pendingSettlements(ORDER_ID_1);
+        assertEq(psOrderId, bytes32(0));
+        assertEq(lp.getOrderInfo(ORDER_ID_1).amount, 10_000e6);
+    }
+
+    function testCancelSettlementAfterFullSettleClearsFulfilled() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.startPrank(relayer);
+        lp.createOrder(params);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS);
+        vm.stopPrank();
+
+        assertTrue(lp.getOrderInfo(ORDER_ID_1).isFulfilled);
+
+        vm.prank(relayer);
+        lp.cancelSettlement(ORDER_ID_1);
+
+        Types.Order memory order = lp.getOrderInfo(ORDER_ID_1);
+        assertFalse(order.isFulfilled);
+        assertEq(order.amount, 10_000e6);
+        assertEq(order.currentBps, Types.MAX_BPS);
+        assertEq(order.feesCollected, 0);
+
+        (bytes32 psOrderId,,,,) = lp.pendingSettlements(ORDER_ID_1);
+        assertEq(psOrderId, bytes32(0));
+    }
+
+    function testCancelSettlementThenSettleAgain() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.startPrank(relayer);
+        lp.createOrder(params);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS / 2);
+        lp.cancelSettlement(ORDER_ID_1);
+
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS);
+        vm.stopPrank();
+
+        assertTrue(lp.getOrderInfo(ORDER_ID_1).isFulfilled);
+
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+        uint256 lpBalBefore = usdc.balanceOf(lpNode);
+
+        vm.prank(lpNode);
+        lp.executeSettlementTransfer(ORDER_ID_1, address(usdc), _noPermit());
+
+        assertEq(usdc.balanceOf(treasury) - treasuryBefore, 40e6);
+        assertEq(usdc.balanceOf(lpNode) - lpBalBefore, 10_000e6 - 40e6);
+    }
+
+    function testCancelSettlementRevertsIfUnauthorized() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.startPrank(relayer);
+        lp.createOrder(params);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS / 2);
+        vm.stopPrank();
+
+        vm.prank(nonAdmin);
+        vm.expectRevert(Unauthorized.selector);
+        lp.cancelSettlement(ORDER_ID_1);
+
+        vm.prank(sender);
+        vm.expectRevert(Unauthorized.selector);
+        lp.cancelSettlement(ORDER_ID_1);
+    }
+
+    function testCancelSettlementRevertsIfNoPendingSettlement() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        vm.prank(relayer);
+        vm.expectRevert(NoPendingSettlement.selector);
+        lp.cancelSettlement(ORDER_ID_1);
+    }
+
+    function testCancelSettlementRevertsIfPaused() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.startPrank(relayer);
+        lp.createOrder(params);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS / 2);
+        vm.stopPrank();
+
+        vm.prank(admin1);
+        lm.pause();
+
+        vm.prank(relayer);
+        vm.expectRevert(Paused.selector);
+        lp.cancelSettlement(ORDER_ID_1);
+    }
+
     function testRefund() public {
         Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
         usdc.approve(address(lp), 10_000e6);
@@ -920,6 +1209,65 @@ contract LiquidityProviderTest is Test {
         lp.emergencyRefund(ORDER_ID_1);
     }
 
+    function testEmergencyRefundByAdmin1WhenPaused() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        vm.prank(admin2);
+        lm.pause();
+
+        vm.prank(admin1);
+        lp.emergencyRefund(ORDER_ID_1);
+
+        Types.Order memory order = lp.getOrderInfo(ORDER_ID_1);
+        assertTrue(order.isRefunded);
+        assertEq(order.amount, 0);
+
+        (bytes32 prOrderId, int256 refundAmount) = lp.pendingRefunds(ORDER_ID_1);
+        assertEq(prOrderId, ORDER_ID_1);
+        assertEq(refundAmount, 10_000e6);
+    }
+
+    function testEmergencyRefundByAdmin2WhenPaused() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        vm.prank(admin1);
+        lm.pause();
+
+        vm.prank(admin2);
+        lp.emergencyRefund(ORDER_ID_1);
+
+        Types.Order memory order = lp.getOrderInfo(ORDER_ID_1);
+        assertTrue(order.isRefunded);
+        assertEq(order.amount, 0);
+    }
+
+    function testEmergencyRefundThenExecuteTransferAsAdmin() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+        usdc.approve(address(lp), 10_000e6);
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        vm.prank(admin1);
+        lm.pause();
+
+        vm.prank(admin2);
+        lp.emergencyRefund(ORDER_ID_1);
+
+        vm.prank(refundAddr);
+        lp.executeRefundTransfer(ORDER_ID_1, address(usdc), _noPermit());
+
+        assertEq(usdc.balanceOf(refundAddr), 10_000e6);
+    }
+
     function testEmergencyRefundRevertsIfAlreadyFulfilled() public {
         Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
         usdc.approve(address(lp), 10_000e6);
@@ -978,6 +1326,41 @@ contract LiquidityProviderTest is Test {
         vm.prank(nonAdmin);
         vm.expectRevert();
         lp.updateSettingsContract(address(0xE1));
+    }
+
+    function testUpdateSettingsContractEmitsEvent() public {
+        LiquidityManager newLmImpl = new LiquidityManager();
+        bytes memory init = abi.encodeCall(
+            LiquidityManager.initialize,
+            (admin1, admin2, treasury, relayer)
+        );
+        TransparentUpgradeableProxy newLmProxy = new TransparentUpgradeableProxy(
+            address(newLmImpl), admin1, init
+        );
+
+        address oldSettings = lp.settingsContract();
+
+        vm.expectEmit(true, true, false, true);
+        emit ILiquidityProvider.SettingsContractUpdated(oldSettings, address(newLmProxy));
+        vm.prank(admin1);
+        lp.updateSettingsContract(address(newLmProxy));
+
+        assertEq(lp.settingsContract(), address(newLmProxy));
+    }
+
+    function testUpdateSettingsContractRevertsIfAdmin2() public {
+        LiquidityManager newLmImpl = new LiquidityManager();
+        bytes memory init = abi.encodeCall(
+            LiquidityManager.initialize,
+            (admin1, admin2, treasury, relayer)
+        );
+        TransparentUpgradeableProxy newLmProxy = new TransparentUpgradeableProxy(
+            address(newLmImpl), admin1, init
+        );
+
+        vm.prank(admin2);
+        vm.expectRevert(Unauthorized.selector);
+        lp.updateSettingsContract(address(newLmProxy));
     }
 
     function testFullSettlementFlow() public {
