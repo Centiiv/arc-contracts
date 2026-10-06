@@ -19,6 +19,7 @@ interface ILiquidityManager {
     function transferAdmin2(address newAdmin) external;
     function acceptAdmin2() external;
     function updateProtocolAddress(uint8 what, address value) external;
+    function setTokenSupported(address token, bool supported) external;
     function pause() external;
     function unpause() external;
 

@@ -80,6 +80,7 @@ error InvalidLpNodeParameters();
 error LpNodeIdAlreadyExists();
 error SettingsContractNotSet();
 error UsdcNotSet();
+error TokenNotSupported();
 error NoPendingSettlement();
 error NoPendingRefund();
 error FeePercentNotSet();

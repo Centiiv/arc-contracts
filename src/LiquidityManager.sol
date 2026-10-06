@@ -70,17 +70,27 @@ contract LiquidityManager is ILiquidityManager, Initializable {
         address _admin1,
         address _admin2,
         address _treasury,
-        address _relayerAddress
+        address _relayerAddress,
+        address _usdc,
+        address _eurc
     ) external initializer {
         if (_admin1 == address(0) || _admin2 == address(0) || _treasury == address(0) || _relayerAddress == address(0)) {
             revert ZeroAddressLM();
         }
+        if (_usdc == address(0)) revert ZeroAddressLM();
         if (_admin1 == _admin2) revert AdminSlotConflictLM();
         admin1 = _admin1;
         admin2 = _admin2;
         treasury = _treasury;
         relayer = _relayerAddress;
         paused = false;
+
+        tokenSupported[_usdc] = true;
+        emit TokenSupportedUpdated(_usdc, true);
+        if (_eurc != address(0)) {
+            tokenSupported[_eurc] = true;
+            emit TokenSupportedUpdated(_eurc, true);
+        }
     }
 
     function transferAdmin1(address newAdmin) external override onlyAdmin1 {
@@ -125,6 +135,15 @@ contract LiquidityManager is ILiquidityManager, Initializable {
         emit ProtocolAddressUpdated(what, value);
     }
 
+    /// @notice Register (or unregister) an ERC-20 as an order token. LiquidityProvider
+    ///         gates createOrder on this, so USDC must be seeded before that gate
+    ///         goes live on an already-deployed proxy.
+    function setTokenSupported(address token, bool supported) external override onlyAdmin {
+        if (token == address(0)) revert ZeroAddressLM();
+        tokenSupported[token] = supported;
+        emit TokenSupportedUpdated(token, supported);
+    }
+
     function pause() external override onlyAdmin {
         paused = true;
         emit PausedEvent();
@@ -160,6 +179,7 @@ contract LiquidityManager is ILiquidityManager, Initializable {
     }
 
     event ProtocolAddressUpdated(uint8 what, address value);
+    event TokenSupportedUpdated(address indexed token, bool supported);
     event AdminTransferProposed(uint8 adminSlot, address newAdmin);
     event AdminTransferred(uint8 adminSlot, address newAdmin);
     event PausedEvent();

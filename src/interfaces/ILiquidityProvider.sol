@@ -43,6 +43,7 @@ interface ILiquidityProvider {
     function cancelSettlement(bytes32 orderId) external;
     function getOrderInfo(bytes32 orderId) external view returns (Types.Order memory);
     function getTokenBalance(address user) external view returns (uint256);
+    function getTokenBalance(address user, address token) external view returns (uint256);
     function updateTierFee(uint8 tier, int256 feeBps) external;
     function getTierFee(uint8 tier) external view returns (int256);
     function updateSettingsContract(address newSettingsContract) external;

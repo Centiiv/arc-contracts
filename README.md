@@ -74,7 +74,7 @@ ProxyAdmin(proxyAdminAddr).upgradeAndCall(
 ### Two-Step Settlement
 
 1. **Step 1 (State Update)** — Relayer calls `settle(orderId, liquidityProvider, settlePercent)` — or the 4-arg overload with an `appliedFeeBps` at or below the fee snapshotted at creation. Updates order state, computes the fee, writes `PendingSettlement` to storage. No tokens move.
-2. **Step 2 (Token Transfer)** — Relayer (or LP node / temporary wallet) calls `executeSettlementTransfer()` with an optional EIP-2612 permit for the temporary wallet's allowance. Transfers USDC to LP node and treasury. Deletes pending record.
+2. **Step 2 (Token Transfer)** — Relayer (or LP node / temporary wallet) calls `executeSettlementTransfer()` with an optional EIP-2612 permit for the temporary wallet's allowance. Transfers the order's token (USDC or EURC — read from `order.token`, never hardcoded) to LP node and treasury. Deletes pending record.
 
 ### Two-Step Refund
 
@@ -161,6 +161,9 @@ export ADMIN2=0x...
 export TREASURY=0x...
 export RELAYER=0x...
 export USDC=0x3600000000000000000000000000000000000000
+# Optional — seeds the LiquidityManager supported-token registry with EURC
+export EURC=0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a   # testnet
+# export EURC=0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1  # mainnet
 ```
 
 ### Deploy with deploy.sh
@@ -265,6 +268,8 @@ forge script script/Deploy.s.sol \
 
 - **USDC is native gas token** — 18 decimals for native, 6 decimals for ERC-20 interface
 - **ERC-20 USDC address**: `0x3600000000000000000000000000000000000000` (testnet and mainnet)
+- **ERC-20 EURC address**: `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` (testnet), `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1` (mainnet) — 6 decimals
+- **Supported-token registry**: `createOrder` reverts with `TokenNotSupported` unless the token is registered via `LiquidityManager.setTokenSupported` (admin). `deploy.sh` seeds USDC (and `EURC` when set); after upgrading an existing deployment, run `script/SetSupportedTokens.s.sol` before upgrading the LiquidityProvider implementation (`upgrade.sh` does this automatically)
 - **Chain IDs**: `5042002` (testnet), `5042` (mainnet)
 - **RPC**: `https://rpc.testnet.arc.io` / `https://rpc.mainnet.arc.io`
 - **Explorer**: `https://testnet.arcscan.app` / `https://arcscan.app`

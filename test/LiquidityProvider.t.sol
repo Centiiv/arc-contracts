@@ -32,6 +32,7 @@ contract LiquidityProviderTest is Test {
     LiquidityProvider public lp;
     LiquidityProviderV2 public lpV2;
     MockERC20 public usdc;
+    MockERC20 public eurc;
     ProxyAdmin public lmProxyAdmin;
     ProxyAdmin public lpProxyAdmin;
     TransparentUpgradeableProxy public lmProxy;
@@ -57,11 +58,12 @@ contract LiquidityProviderTest is Test {
     function setUp() public {
         tempWallet = vm.addr(TEMP_WALLET_PK);
         usdc = new MockERC20("USD Coin", "USDC");
+        eurc = new MockERC20("Euro Coin", "EURC");
 
         LiquidityManager lmImpl = new LiquidityManager();
         bytes memory lmInit = abi.encodeCall(
             LiquidityManager.initialize,
-            (admin1, admin2, treasury, relayer)
+            (admin1, admin2, treasury, relayer, address(usdc), address(eurc))
         );
         lmProxy = new TransparentUpgradeableProxy(address(lmImpl), admin1, lmInit);
         lmProxyAdmin = _getProxyAdmin(address(lmProxy));
@@ -78,13 +80,17 @@ contract LiquidityProviderTest is Test {
 
         usdc.mint(sender, 10_000e6);
         usdc.mint(tempWallet, 10_000e6);
+        eurc.mint(sender, 10_000e6);
+        eurc.mint(tempWallet, 10_000e6);
 
         vm.startPrank(sender);
         usdc.approve(address(lp), type(uint256).max);
+        eurc.approve(address(lp), type(uint256).max);
         vm.stopPrank();
 
         vm.startPrank(tempWallet);
         usdc.approve(address(lp), type(uint256).max);
+        eurc.approve(address(lp), type(uint256).max);
         vm.stopPrank();
     }
 
@@ -121,9 +127,19 @@ contract LiquidityProviderTest is Test {
         int256 amount,
         Types.ProtocolFees feeTier
     ) internal returns (Types.OrderParams memory) {
+        return _createOrder(orderId, _sender, amount, feeTier, address(usdc));
+    }
+
+    function _createOrder(
+        bytes32 orderId,
+        address _sender,
+        int256 amount,
+        Types.ProtocolFees feeTier,
+        address token
+    ) internal returns (Types.OrderParams memory) {
         Types.OrderParams memory params = Types.OrderParams({
             orderId: orderId,
-            token: address(usdc),
+            token: token,
             sender: _sender,
             amount: amount,
             rate: 1,
@@ -1311,7 +1327,7 @@ contract LiquidityProviderTest is Test {
         LiquidityManager newLmImpl = new LiquidityManager();
         bytes memory init = abi.encodeCall(
             LiquidityManager.initialize,
-            (admin1, admin2, treasury, relayer)
+            (admin1, admin2, treasury, relayer, address(usdc), address(eurc))
         );
         TransparentUpgradeableProxy newLmProxy = new TransparentUpgradeableProxy(
             address(newLmImpl), admin1, init
@@ -1332,7 +1348,7 @@ contract LiquidityProviderTest is Test {
         LiquidityManager newLmImpl = new LiquidityManager();
         bytes memory init = abi.encodeCall(
             LiquidityManager.initialize,
-            (admin1, admin2, treasury, relayer)
+            (admin1, admin2, treasury, relayer, address(usdc), address(eurc))
         );
         TransparentUpgradeableProxy newLmProxy = new TransparentUpgradeableProxy(
             address(newLmImpl), admin1, init
@@ -1352,7 +1368,7 @@ contract LiquidityProviderTest is Test {
         LiquidityManager newLmImpl = new LiquidityManager();
         bytes memory init = abi.encodeCall(
             LiquidityManager.initialize,
-            (admin1, admin2, treasury, relayer)
+            (admin1, admin2, treasury, relayer, address(usdc), address(eurc))
         );
         TransparentUpgradeableProxy newLmProxy = new TransparentUpgradeableProxy(
             address(newLmImpl), admin1, init
@@ -1486,5 +1502,147 @@ contract LiquidityProviderTest is Test {
 
         LiquidityProviderV2 upgraded = LiquidityProviderV2(address(lpProxy));
         assertEq(upgraded.version(), "2.0.0");
+    }
+
+    // --- Multi-token (USDC + EURC) support ---
+
+    function testSupportedTokensSeededAtInitialize() public view {
+        assertTrue(lm.isTokenSupported(address(usdc)));
+        assertTrue(lm.isTokenSupported(address(eurc)));
+        assertFalse(lm.isTokenSupported(address(0xDEAD)));
+    }
+
+    function testCreateOrderRevertsIfTokenNotSupported() public {
+        MockERC20 unsupported = new MockERC20("Scam Token", "SCAM");
+
+        Types.OrderParams memory params = _createOrder(
+            ORDER_ID_1, sender, 1000e6, Types.ProtocolFees.Basic, address(unsupported)
+        );
+
+        vm.prank(relayer);
+        vm.expectRevert(TokenNotSupported.selector);
+        lp.createOrder(params);
+    }
+
+    function testCreateOrderSucceedsAfterEnablingToken() public {
+        MockERC20 newToken = new MockERC20("New Token", "NEW");
+        newToken.mint(sender, 1000e6);
+
+        vm.startPrank(sender);
+        newToken.approve(address(lp), type(uint256).max);
+        vm.stopPrank();
+
+        Types.OrderParams memory params = _createOrder(
+            ORDER_ID_1, sender, 1000e6, Types.ProtocolFees.Basic, address(newToken)
+        );
+
+        vm.prank(relayer);
+        vm.expectRevert(TokenNotSupported.selector);
+        lp.createOrder(params);
+
+        vm.prank(admin1);
+        lm.setTokenSupported(address(newToken), true);
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        Types.Order memory order = lp.getOrderInfo(ORDER_ID_1);
+        assertEq(order.token, address(newToken));
+    }
+
+    function testEurcCreateOrder() public {
+        Types.OrderParams memory params = _createOrder(
+            ORDER_ID_1, sender, 1000e6, Types.ProtocolFees.Basic, address(eurc)
+        );
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        Types.Order memory order = lp.getOrderInfo(ORDER_ID_1);
+        assertEq(order.token, address(eurc));
+        assertEq(order.amount, 1000e6);
+        assertEq(eurc.balanceOf(tempWallet), 10_000e6 + 1000e6);
+    }
+
+    function testEurcFullSettlementFlow() public {
+        Types.OrderParams memory params = _createOrder(
+            ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic, address(eurc)
+        );
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        vm.prank(relayer);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS);
+
+        uint256 treasuryBefore = eurc.balanceOf(treasury);
+        uint256 lpBefore = eurc.balanceOf(lpNode);
+
+        vm.prank(lpNode);
+        lp.executeSettlementTransfer(ORDER_ID_1, address(eurc), _noPermit());
+
+        assertEq(eurc.balanceOf(treasury) - treasuryBefore, 40e6);
+        assertEq(eurc.balanceOf(lpNode) - lpBefore, 10_000e6 - 40e6);
+    }
+
+    function testEurcRefundFlow() public {
+        Types.OrderParams memory params = _createOrder(
+            ORDER_ID_1, sender, 1000e6, Types.ProtocolFees.Basic, address(eurc)
+        );
+
+        uint256 refundBefore = eurc.balanceOf(refundAddr);
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        vm.prank(relayer);
+        lp.refund(ORDER_ID_1);
+
+        vm.prank(refundAddr);
+        lp.executeRefundTransfer(ORDER_ID_1, address(eurc), _noPermit());
+
+        assertEq(eurc.balanceOf(refundAddr) - refundBefore, 1000e6);
+        assertTrue(lp.getOrderInfo(ORDER_ID_1).isRefunded);
+    }
+
+    function testEurcSettlementRevertsIfExecutedWithUsdcToken() public {
+        Types.OrderParams memory params = _createOrder(
+            ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic, address(eurc)
+        );
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        vm.prank(relayer);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS);
+
+        vm.prank(lpNode);
+        vm.expectRevert(InvalidParameter.selector);
+        lp.executeSettlementTransfer(ORDER_ID_1, address(usdc), _noPermit());
+    }
+
+    function testUsdcSettlementRevertsIfExecutedWithEurcToken() public {
+        Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
+
+        vm.prank(relayer);
+        lp.createOrder(params);
+
+        vm.prank(relayer);
+        lp.settle(ORDER_ID_1, lpNode, Types.MAX_BPS);
+
+        vm.prank(lpNode);
+        vm.expectRevert(InvalidParameter.selector);
+        lp.executeSettlementTransfer(ORDER_ID_1, address(eurc), _noPermit());
+    }
+
+    function testGetTokenBalanceWithToken() public view {
+        assertEq(lp.getTokenBalance(sender, address(usdc)), 10_000e6);
+        assertEq(lp.getTokenBalance(sender, address(eurc)), 10_000e6);
+        assertEq(lp.getTokenBalance(sender, address(usdc)), lp.getTokenBalance(sender));
+    }
+
+    function testGetTokenBalanceWithZeroTokenReverts() public {
+        vm.expectRevert(ZeroAddress.selector);
+        lp.getTokenBalance(sender, address(0));
     }
 }

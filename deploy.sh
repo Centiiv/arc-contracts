@@ -2,6 +2,8 @@
 
 export PATH="$HOME/.foundry/bin:$PATH"
 
+PROJECT_DIR="$(pwd)"
+
 # --- Parse --network flag ---
 NETWORK="testnet"
 for arg in "$@"; do
@@ -50,6 +52,7 @@ if [ -f ".env" ]; then
   echo "  Treasury:  $TREASURY"
   echo "  Relayer:   $RELAYER"
   echo "  USDC:      $USDC"
+  echo "  EURC:      $EURC"
   echo ""
   read -rp "  Use these? [Y/n]: " USE_EXISTING
   if [ "$USE_EXISTING" = "n" ] || [ "$USE_EXISTING" = "N" ]; then
@@ -133,6 +136,11 @@ if [ ! -f ".env" ]; then
   fi
 
   USDC="0x3600000000000000000000000000000000000000"
+  if [ "$NETWORK" = "mainnet" ]; then
+    EURC="0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1"
+  else
+    EURC="0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
+  fi
 
   cat > "$PROJECT_DIR/.env" <<EOF
 PRIVATE_KEY=$DEPLOYER_KEY
@@ -146,11 +154,21 @@ TREASURY_KEY=$TREASURY_KEY
 RELAYER=$RELAYER
 RELAYER_KEY=$RELAYER_KEY
 USDC=$USDC
+EURC=$EURC
 EOF
 
   echo "[2/4] Saved to .env (includes all private keys)"
   echo ""
 fi
+
+# --- Token addresses ---
+USDC="${USDC:-0x3600000000000000000000000000000000000000}"
+if [ "$NETWORK" = "mainnet" ]; then
+  EURC="${EURC:-0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1}"
+else
+  EURC="${EURC:-0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a}"
+fi
+export USDC EURC
 
 # --- Summary ---
 echo "============================================"
@@ -164,6 +182,7 @@ echo "  Admin 2:   $ADMIN2"
 echo "  Treasury:  $TREASURY"
 echo "  Relayer:   $RELAYER"
 echo "  USDC:      $USDC"
+echo "  EURC:      $EURC"
 echo "============================================"
 echo ""
 
@@ -226,6 +245,7 @@ else
   echo "  Admin functions you can now test:"
   echo "    pause() / unpause()         — either admin"
   echo "    updateProtocolAddress()     — either admin"
+  echo "    setTokenSupported()         — either admin"
   echo "    transferAdmin1/2()          — specific admin"
   echo ""
 fi

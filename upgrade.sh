@@ -25,9 +25,11 @@ done
 if [ "$NETWORK" = "mainnet" ]; then
   RPC_URL="https://rpc.mainnet.arc.io"
   EXPLORER="https://arcscan.app"
+  VERIFY_EXPLORER="https://explorer.arc.io"
 else
   RPC_URL="https://rpc.testnet.arc.io"
   EXPLORER="https://testnet.arcscan.app"
+  VERIFY_EXPLORER="https://explorer.testnet.arc.io"
 fi
 
 echo "============================================"
@@ -151,28 +153,120 @@ echo ""
 echo "[3/3] Building & upgrading..."
 echo ""
 
-forge build
+# --force: forge's incremental cache can leave script/ artifacts stale relative
+# to src/ edits, which embeds outdated impl bytecode in UpgradeScript. Always rebuild.
+forge build --force
 
-SCRIPT_ARGS=""
-if [ "$UPGRADE_TARGET" = "lm" ]; then
-  SCRIPT_ARGS=":UpgradeScript:runLM"
-elif [ "$UPGRADE_TARGET" = "lp" ]; then
-  SCRIPT_ARGS=":UpgradeScript:runLP"
-else
-  SCRIPT_ARGS=""
-fi
+NEW_LM_IMPL=""
+NEW_LP_IMPL=""
 
-if ! forge script "script/Upgrade.s.sol${SCRIPT_ARGS}" \
-  --rpc-url "$RPC_URL" \
-  --private-key "$PRIVATE_KEY" \
-  --broadcast \
-  -vvv
-then
+run_upgrade() {
+  local sig="$1" tmp status impl
+  tmp=$(mktemp)
+  forge script "script/Upgrade.s.sol:UpgradeScript" \
+    --sig "$sig" \
+    --rpc-url "$RPC_URL" \
+    --private-key "$PRIVATE_KEY" \
+    --broadcast \
+    -vvv 2>&1 | tee "$tmp"
+  status=${PIPESTATUS[0]}
+  impl=$(grep -oE 'New implementation: 0x[0-9a-fA-F]{40}' "$tmp" | tail -1 | grep -oE '0x[0-9a-fA-F]{40}' || true)
+  rm -f "$tmp"
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
+  if [ "$sig" = "runLM()" ]; then
+    NEW_LM_IMPL="$impl"
+  else
+    NEW_LP_IMPL="$impl"
+  fi
+}
+
+fail_upgrade() {
   echo ""
   echo "============================================"
   echo "  Upgrade FAILED"
   echo "============================================"
   exit 1
+}
+
+# --- Verification JSONs (same format/flow as verify.sh) ---
+OUTPUT_DIR="verification_jsons"
+mkdir -p "$OUTPUT_DIR"
+VERIFY_LINKS=()
+
+generate_verify_json() {
+  local addr="$1"
+  local path_and_contract="$2"
+  local filename="$3"
+  local desc="$4"
+  local output_file="$OUTPUT_DIR/$filename"
+
+  echo "  Generating verification JSON: $output_file"
+  if forge verify-contract \
+    "$addr" \
+    "$path_and_contract" \
+    --show-standard-json-input > "$output_file"; then
+    VERIFY_LINKS+=("$desc|$addr|$output_file|$VERIFY_EXPLORER/address/$addr/contract-verification")
+  else
+    rm -f "$output_file"
+    echo "  Warning: could not generate JSON for $desc (run ./verify.sh manually)"
+  fi
+}
+
+# Seeds the supported-token registry on the live LM proxy (initialize cannot
+# re-run). MUST happen before the new LiquidityProvider — whose createOrder
+# gates on isTokenSupported — goes live, otherwise every new order reverts.
+seed_supported_tokens() {
+  echo ""
+  echo "  Seeding supported tokens (USDC, EURC) on $LM_PROXY ..."
+
+  local env_usdc="" env_eurc=""
+  if [ -f ".env" ]; then
+    env_usdc=$(grep -E '^USDC=' .env | tail -1 | cut -d= -f2- | tr -d '\r\n' || true)
+    env_eurc=$(grep -E '^EURC=' .env | tail -1 | cut -d= -f2- | tr -d '\r\n' || true)
+  fi
+  USDC="${env_usdc:-0x3600000000000000000000000000000000000000}"
+  if [ "$NETWORK" = "mainnet" ]; then
+    EURC="${env_eurc:-0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1}"
+  else
+    EURC="${env_eurc:-0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a}"
+  fi
+
+  if ! LM_PROXY="$LM_PROXY" USDC="$USDC" EURC="$EURC" PRIVATE_KEY="$PRIVATE_KEY" \
+    forge script script/SetSupportedTokens.s.sol \
+      --rpc-url "$RPC_URL" \
+      --broadcast \
+      -vvv
+  then
+    echo ""
+    echo "============================================"
+    echo "  Token registry seeding FAILED"
+    echo "  Do NOT upgrade LiquidityProvider until this succeeds —"
+    echo "  its createOrder gate would reject every order."
+    echo "============================================"
+    exit 1
+  fi
+}
+
+if [ "$UPGRADE_TARGET" = "both" ]; then
+  run_upgrade "runLM()" || fail_upgrade
+  seed_supported_tokens
+  run_upgrade "runLP()" || fail_upgrade
+elif [ "$UPGRADE_TARGET" = "lm" ]; then
+  run_upgrade "runLM()" || fail_upgrade
+  seed_supported_tokens
+else
+  run_upgrade "runLP()" || fail_upgrade
+fi
+
+echo ""
+echo "  Generating verification inputs for new implementations..."
+if [ -n "$NEW_LM_IMPL" ]; then
+  generate_verify_json "$NEW_LM_IMPL" "src/LiquidityManager.sol:LiquidityManager" "LiquidityManager_Impl.json" "LiquidityManager Implementation"
+fi
+if [ -n "$NEW_LP_IMPL" ]; then
+  generate_verify_json "$NEW_LP_IMPL" "src/LiquidityProvider.sol:LiquidityProvider" "LiquidityProvider_Impl.json" "LiquidityProvider Implementation"
 fi
 
 echo ""
@@ -180,5 +274,38 @@ echo "============================================"
 echo "  Upgrade complete!"
 echo "============================================"
 echo ""
+if [ -n "$NEW_LM_IMPL" ]; then
+  echo "  New LiquidityManager implementation: $NEW_LM_IMPL"
+fi
+if [ -n "$NEW_LP_IMPL" ]; then
+  echo "  New LiquidityProvider implementation: $NEW_LP_IMPL"
+fi
+if [ -n "$NEW_LM_IMPL" ]; then
+  echo "  LiquidityManager proxy upgraded:     $LM_PROXY"
+fi
+if [ -n "$NEW_LP_IMPL" ]; then
+  echo "  LiquidityProvider proxy upgraded:     $LP_PROXY"
+fi
+echo ""
+if [ ${#VERIFY_LINKS[@]} -gt 0 ]; then
+  echo "================================================================================"
+  echo "                           VERIFICATION LINKS & FILES"
+  echo "================================================================================"
+  echo "  On each link:"
+  echo "    1. Verification Method:  Solidity (Standard-Json-Input)"
+  echo "    2. Compiler Version:     v0.8.28"
+  echo "    3. License:              No License / UNLICENSED"
+  echo "    4. Upload the corresponding JSON file from ./$OUTPUT_DIR/"
+  echo "================================================================================"
+  echo ""
+  for entry in "${VERIFY_LINKS[@]}"; do
+    IFS="|" read -r desc addr file url <<< "$entry"
+    echo "  [$desc]"
+    echo "  Address: $addr"
+    echo "  File:    $file"
+    echo "  Link:    $url"
+    echo ""
+  done
+fi
 echo "  Explorer: $EXPLORER"
 echo ""

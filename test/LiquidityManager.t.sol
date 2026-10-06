@@ -36,6 +36,8 @@ contract LiquidityManagerTest is Test {
     address public relayer = address(0xB2);
     address public newAdmin = address(0xC1);
     address public nonAdmin = address(0xD1);
+    address constant USDC_TOKEN = address(0x100);
+    address constant EURC_TOKEN = address(0x200);
 
     bytes32 constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
 
@@ -43,7 +45,7 @@ contract LiquidityManagerTest is Test {
         LiquidityManager lmImpl = new LiquidityManager();
         bytes memory init = abi.encodeCall(
             LiquidityManager.initialize,
-            (admin1, admin2, treasury, relayer)
+            (admin1, admin2, treasury, relayer, USDC_TOKEN, EURC_TOKEN)
         );
         lmProxy = new TransparentUpgradeableProxy(address(lmImpl), admin1, init);
         address proxyAdminAddr;
@@ -64,14 +66,14 @@ contract LiquidityManagerTest is Test {
     function testInitializeRevertsIfAlreadyInitialized() public {
         vm.expectRevert();
         vm.prank(admin1);
-        lm.initialize(admin1, admin2, treasury, relayer);
+        lm.initialize(admin1, admin2, treasury, relayer, USDC_TOKEN, EURC_TOKEN);
     }
 
     function testInitializeRevertsIfAdminsEqual() public {
         LiquidityManager lmImpl = new LiquidityManager();
         bytes memory init = abi.encodeCall(
             LiquidityManager.initialize,
-            (admin1, admin1, treasury, relayer)
+            (admin1, admin1, treasury, relayer, USDC_TOKEN, EURC_TOKEN)
         );
 
         vm.expectRevert(AdminSlotConflictLM.selector);
@@ -295,5 +297,77 @@ contract LiquidityManagerTest is Test {
 
         LiquidityManagerV2 upgraded = LiquidityManagerV2(address(lmProxy));
         assertEq(upgraded.version(), "2.0.0");
+    }
+
+    // --- Supported-token registry ---
+
+    event TokenSupportedUpdated(address indexed token, bool supported);
+
+    function testInitializeSeedsSupportedTokens() public view {
+        assertTrue(lm.isTokenSupported(USDC_TOKEN));
+        assertTrue(lm.isTokenSupported(EURC_TOKEN));
+    }
+
+    function testInitializeWithZeroEurcSeedsUsdcOnly() public {
+        LiquidityManager lmImpl = new LiquidityManager();
+        bytes memory init = abi.encodeCall(
+            LiquidityManager.initialize,
+            (admin1, admin2, treasury, relayer, USDC_TOKEN, address(0))
+        );
+        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(address(lmImpl), admin1, init);
+        LiquidityManager fresh = LiquidityManager(address(proxy));
+
+        assertTrue(fresh.isTokenSupported(USDC_TOKEN));
+        assertFalse(fresh.isTokenSupported(EURC_TOKEN));
+    }
+
+    function testInitializeRevertsIfUsdcZero() public {
+        LiquidityManager lmImpl = new LiquidityManager();
+        bytes memory init = abi.encodeCall(
+            LiquidityManager.initialize,
+            (admin1, admin2, treasury, relayer, address(0), EURC_TOKEN)
+        );
+
+        vm.expectRevert(ZeroAddressLM.selector);
+        new TransparentUpgradeableProxy(address(lmImpl), admin1, init);
+    }
+
+    function testSetTokenSupportedByAdmin1() public {
+        address newToken = address(0x300);
+        assertFalse(lm.isTokenSupported(newToken));
+
+        vm.prank(admin1);
+        lm.setTokenSupported(newToken, true);
+        assertTrue(lm.isTokenSupported(newToken));
+
+        vm.prank(admin1);
+        lm.setTokenSupported(newToken, false);
+        assertFalse(lm.isTokenSupported(newToken));
+    }
+
+    function testSetTokenSupportedByAdmin2() public {
+        vm.prank(admin2);
+        lm.setTokenSupported(address(0x300), true);
+        assertTrue(lm.isTokenSupported(address(0x300)));
+    }
+
+    function testSetTokenSupportedRevertsIfNonAdmin() public {
+        vm.prank(nonAdmin);
+        vm.expectRevert(UnauthorizedLM.selector);
+        lm.setTokenSupported(address(0x300), true);
+    }
+
+    function testSetTokenSupportedRevertsIfZeroAddress() public {
+        vm.prank(admin1);
+        vm.expectRevert(ZeroAddressLM.selector);
+        lm.setTokenSupported(address(0), true);
+    }
+
+    function testSetTokenSupportedEmitsEvent() public {
+        vm.expectEmit(true, false, false, true);
+        emit TokenSupportedUpdated(address(0x300), true);
+
+        vm.prank(admin1);
+        lm.setTokenSupported(address(0x300), true);
     }
 }

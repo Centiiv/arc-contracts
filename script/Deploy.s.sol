@@ -26,6 +26,8 @@ contract DeployScript is Script {
         address treasury = vm.envAddress("TREASURY");
         address relayer = vm.envAddress("RELAYER");
         address usdc = vm.envAddress("USDC");
+        // Optional — zero address seeds USDC only.
+        address eurc = vm.envOr("EURC", address(0));
 
         vm.startBroadcast(deployerPrivateKey);
 
@@ -34,7 +36,7 @@ contract DeployScript is Script {
 
         bytes memory lmInit = abi.encodeCall(
             LiquidityManager.initialize,
-            (admin1, admin2, treasury, relayer)
+            (admin1, admin2, treasury, relayer, usdc, eurc)
         );
         TransparentUpgradeableProxy lmProxy = new TransparentUpgradeableProxy(
             address(lmImpl),

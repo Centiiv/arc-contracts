@@ -77,6 +77,7 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         if (params.amount < Types.MIN_ORDER_AMOUNT) revert AmountBelowMinimum();
         if (params.messageHash == bytes32(0)) revert InvalidMessageHash();
         if (params.token == address(0)) revert ZeroAddress();
+        if (!ILiquidityManager(settingsContract).isTokenSupported(params.token)) revert TokenNotSupported();
         if (params.temporaryWalletAddress == address(0)) revert ZeroAddress();
         if (params.refundAddress == address(0)) revert ZeroAddress();
 
@@ -375,6 +376,11 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
 
     function getTokenBalance(address user) external view returns (uint256) {
         return IERC20(usdc).balanceOf(user);
+    }
+
+    function getTokenBalance(address user, address token) external view returns (uint256) {
+        if (token == address(0)) revert ZeroAddress();
+        return IERC20(token).balanceOf(user);
     }
 
     function updateTierFee(uint8 tier, int256 feeBps) external onlySettingsAdmin {

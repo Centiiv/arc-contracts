@@ -1,7 +1,7 @@
 # Centiiv Liquidity Protocol: Arc Technical Architecture & Specification
 
 Target platform: Arc Network (Circle Layer-1)  
-Primary asset: Canonical USDC (`0x3600000000000000000000000000000000000000`)  
+Primary assets: Canonical USDC (`0x3600000000000000000000000000000000000000`), EURC (testnet `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, mainnet `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`)  
 Solidity version: `^0.8.20`  
 Proxy pattern: OpenZeppelin `TransparentUpgradeableProxy`  
 
@@ -9,7 +9,7 @@ Proxy pattern: OpenZeppelin `TransparentUpgradeableProxy`
 
 ## 1. Executive summary
 
-The Centiiv Liquidity Protocol provides deterministic, non-custodial USDC liquidity routing and order fulfillment on the Arc Layer-1 network. It uses two contracts, separating protocol governance and parameterization from transactional settlement.
+The Centiiv Liquidity Protocol provides deterministic, non-custodial stablecoin (USDC / EURC) liquidity routing and order fulfillment on the Arc Layer-1 network. It uses two contracts, separating protocol governance and parameterization from transactional settlement.
 
 Orders move through an escrowed state machine. Payouts and refunds use a two-phase settlement pattern (State Commitment -> Fund Disbursement) via EIP-2612 gas-abstracted permit authorizations. The protocol does not pool user capital or hold settlement assets in long-term contract custody.
 
@@ -23,6 +23,7 @@ Orders move through an escrowed state machine. Payouts and refunds use a two-pha
 | **Execution Environment** | EVM-compatible |
 | **Native Gas Token** | USDC |
 | **Canonical USDC Contract** | `0x3600000000000000000000000000000000000000` |
+| **Supported Settlement Tokens** | USDC, EURC (6 decimals each; registered in `LiquidityManager.setTokenSupported`) |
 | **Testnet Chain ID** | `5042002` |
 | **Mainnet Chain ID** | `5042` |
 | **Finality Model** | Sub-second deterministic finality |
@@ -38,6 +39,8 @@ The system decouples configuration state from order-routing logic across two pri
 This contract holds protocol-wide configuration, operational registries, and access-control mappings. It handles state only and holds zero asset balances.
 
 It runs under dual-admin governance: sensitive configuration changes require authorization across both administrative accounts, and ownership transfers follow a two-step propose/accept pattern. The contract also stores the protocol `Treasury` address and the authorized `Relayer` execution keys, provides a global pause switch that halts non-emergency operations immediately, and keeps the fee schedule in basis points (bps).
+
+It additionally maintains the supported-token registry (`setTokenSupported` / `isTokenSupported`, admin-only). `LiquidityProvider.createOrder` reverts with `TokenNotSupported` for any token that is not registered, so the set of settleable assets (USDC, EURC, …) is an explicit governance decision rather than an implicit whitelist.
 
 ### 3.2 `LiquidityProvider.sol`
 
@@ -55,7 +58,8 @@ An order is created on-chain by registering its metadata and escrowing capital.
 
 1. The caller provides an order identifier, nominal token volume, routing parameters, and execution message hash.
 2. The active fee tier rate is queried from `LiquidityManager` and bound permanently to the order as F_max.
-3. Capital is deposited into a dedicated order-bound escrow address. Orders cannot be overwritten, re-initialized, or underfunded.
+3. The order's token is checked against `LiquidityManager.isTokenSupported` — unregistered tokens revert with `TokenNotSupported`.
+4. Capital is deposited into a dedicated order-bound escrow address. Orders cannot be overwritten, re-initialized, or underfunded.
 
 ### 4.2 Two-phase settlement
 
