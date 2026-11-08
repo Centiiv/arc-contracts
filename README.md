@@ -15,11 +15,18 @@ Both contracts are deployed behind **upgradeable proxies** (OpenZeppelin Transpa
 
 | Tier | Default Fee |
 |------|-------------|
-| Basic | 0.4% (400 bps) |
-| Alpha | 0.3% (300 bps) |
-| Ultimate | 0.2% (200 bps) |
+| Basic | 0.40% (400 fee units) |
+| Alpha | 0.30% (300 fee units) |
+| Ultimate | 0.20% (200 fee units) |
 
-Fees use ceiling division (protocol never loses on rounding) and are snapshotted per order at creation.
+Fee values are **not** basis points. One fee unit is 0.001% and the denominator is
+`Types.MAX_BPS = 100_000`, kept for storage compatibility with live orders. Fees use
+ceiling division (protocol never loses on rounding) and are snapshotted per order at
+creation. A tier may be set to `0`; that is a valid promotional rate and produces a
+zero-fee order rather than an error.
+
+Relayer-created orders must carry an EIP-712 `OrderIntent` signed by the sender. The
+wire format and a viem example are in `EIP712_INTENT.md`.
 
 The snapshotted rate is a **cap, not a fixed charge**. `settle()` comes in two forms:
 
@@ -45,25 +52,30 @@ The snapshotted rate is a **cap, not a fixed charge**. `settle()` comes in two f
               │  (or Provider)           │
               └─────────────────────────┘
 
-              ┌─────────────────────────┐
-              │  ProxyAdmin              │  ◄── Owns both proxies
-              │  (owned by admin1)       │      Only this can upgrade
-              └─────────────────────────┘
+    Safe (2-of-3) ──> TimelockController (2h) ──> ProxyAdmin ──> proxy
 ```
 
 - **Proxy**: Stores all state (orders, balances, settings). Forwards calls to implementation via `delegatecall`.
-- **Implementation**: Contains the logic. Can be replaced by deploying a new implementation and calling `upgradeAndCall` on the ProxyAdmin.
-- **ProxyAdmin**: Owns both proxies. Only `admin1` (as ProxyAdmin owner) can trigger upgrades.
+- **Implementation**: Contains the logic. Replaced by scheduling an upgrade through the timelock.
+- **ProxyAdmin**: Owns one proxy each. After the Wave 3 migration it is owned by the timelock, not by an EOA.
+- **Timelock**: Deployed with no external admin; delay/role changes must themselves pass the 2-hour delay.
 
-State is preserved across upgrades. The proxy address never changes.
+State is preserved across upgrades. The proxy address never changes. See
+`GOVERNANCE_MIGRATION.md` for the migration and `scripts/check-storage-layout.sh` for the
+layout gate.
 
 ### Upgrading
+
+Before the governance migration, `upgrade.sh` signs with `admin1` and works as below.
+After the migration, an upgrade is a Safe transaction that schedules
+`ProxyAdmin.upgradeAndCall(proxy, newImpl, "")` on the timelock and executes it two
+hours later. A single EOA can no longer upgrade.
 
 ```solidity
 // Deploy new implementation
 LiquidityManager newImpl = new LiquidityManager();
 
-// Admin calls ProxyAdmin to swap
+// Timelock (formerly admin1) calls ProxyAdmin to swap
 ProxyAdmin(proxyAdminAddr).upgradeAndCall(
     ITransparentUpgradeableProxy(proxy),
     address(newImpl),
@@ -73,26 +85,34 @@ ProxyAdmin(proxyAdminAddr).upgradeAndCall(
 
 ### Two-Step Settlement
 
-1. **Step 1 (State Update)** — Relayer calls `settle(orderId, liquidityProvider, settlePercent)` — or the 4-arg overload with an `appliedFeeBps` at or below the fee snapshotted at creation. Updates order state, computes the fee, writes `PendingSettlement` to storage. No tokens move.
-2. **Step 2 (Token Transfer)** — Relayer (or LP node / temporary wallet) calls `executeSettlementTransfer()` with an optional EIP-2612 permit for the temporary wallet's allowance. Transfers the order's token (USDC or EURC — read from `order.token`, never hardcoded) to LP node and treasury. Deletes pending record.
+1. **Step 1 (State Update)** — Relayer calls `settle(orderId, liquidityProvider, settlePercent)` — or the 4-arg overload with an `appliedFeeBps` at or below the fee snapshotted at creation. Updates order state, computes the fee, writes `PendingSettlement` to storage. No tokens move. This is blocked while paused.
+2. **Step 2 (Token Transfer)** — Relayer (or LP node / temporary wallet) calls `executeSettlementTransfer()` with an optional EIP-2612 permit for the temporary wallet's allowance. Transfers the order's token (USDC or EURC — read from `order.token`, never hardcoded) to LP node and treasury. Deletes pending record. **Blocked while paused**, which is the 5.1.1 fix: a settlement recorded before an incident pause cannot be paid out.
 
 ### Two-Step Refund
 
-1. **Step 1 (State Update)** — Relayer calls `refund()`. Marks order refunded, writes `PendingRefund`. No tokens move.
-2. **Step 2 (Token Transfer)** — Relayer, refund address (or temporary wallet) calls `executeRefundTransfer()`. Returns full amount to refund address.
+1. **Step 1 (State Update)** — Relayer calls `refund()`. Marks the order refunded, writes `PendingRefund` with the **remaining** principal after any partial settlements. No tokens move. Blocked while paused.
+2. **Step 2 (Token Transfer)** — Relayer, refund address (or temporary wallet) calls `executeRefundTransfer()`. Returns the remaining principal to `refundAddress`. **Not blocked while paused** — the recipient is always the refund address, never a caller-chosen party.
 
 ### Emergency Refund
 
-Relayer calls `emergencyRefund()` while contract is paused. Full amount returned with no fee.
+While paused, the relayer, `admin1`, `admin2`, or the order's sender can call
+`emergencyRefund()`. It records the remaining principal with no fee. The matching
+`executeRefundTransfer()` stays available while paused.
+
+### Cancelling a Recorded Settlement
+
+`cancelSettlement()` reverses a recorded (not yet paid) settlement. It moves no tokens
+and is **not** blocked while paused, so `cancelSettlement` → `emergencyRefund` →
+`executeRefundTransfer` is always a valid exit.
 
 ## Auth Model
 
-- **Relayer** — Authorizes settlement, refund, and emergency refund; chooses the applied fee rate at settlement (capped by the creation-time snapshot)
-- **Sender** — Pre-approves LP contract via `IERC20.approve()` for order creation
-- **Temp Wallet** — Holds order funds; authorizes funding (`createOrder`) and settlement/refund transfers via off-chain EIP-2612 permit signatures — it never sends a transaction and never pays gas
-- **LP Node / Refund Address / Relayer** — Can execute the recorded settlement (`executeSettlementTransfer`) and refund (`executeRefundTransfer`) transfers
-- **Admin1/Admin2** — Either admin can pause, unpause, update addresses, update fee tiers
-- **ProxyAdmin Owner (admin1)** — Can upgrade implementation contracts via ProxyAdmin
+- **Relayer** — Authorizes settlement, refund, and emergency refund; chooses the applied fee rate at settlement (capped by the creation-time snapshot). On the off-ramp path it creates orders on behalf of users, which requires an EIP-712 `OrderIntent` signature from the user.
+- **Sender** — Owns the deposit, approves the LP contract via `IERC20.approve()` or an EIP-2612 permit, and signs the order intent. On the LP self path the sender is the LP node and no intent is needed.
+- **Temp Wallet** — Holds order funds and authorizes settlement/refund transfers via off-chain EIP-2612 permit signatures — it never sends a transaction and never pays gas. Off-ramp orders use a dedicated wallet; on-ramp orders pay into the LP node's own wallet.
+- **LP Node / Refund Address / Relayer** — Can execute the recorded settlement (`executeSettlementTransfer`) and refund (`executeRefundTransfer`) transfers, subject to the pause rules above.
+- **Admin1/Admin2** — Either admin can pause, unpause, update protocol addresses, register tokens, and update fee tiers. Only `admin1` can call `updateSettingsContract` or transfer the `admin1` slot; `admin2` transfers its own slot.
+- **Safe (2-of-3) → Timelock (2h) → ProxyAdmin** — Controls implementation upgrades. `admin1` is set to the Safe after the migration, so admin rotation and `updateSettingsContract` require quorum.
 
 ## Project Structure
 
@@ -107,15 +127,30 @@ src/
 ├── LiquidityManager.sol         # Settings manager (upgradeable)
 └── LiquidityProvider.sol        # LP contract (upgradeable)
 test/
-├── mocks/
-│   └── MockERC20.sol            # Mock USDC
-├── LiquidityManager.t.sol       # 27 tests (incl. upgradeability)
-├── LiquidityProvider.t.sol      # 60 tests (incl. upgradeability, fee cap)
+├── mocks/MockERC20.sol          # Mock USDC/EURC with EIP-2612
+├── CentiivTestBase.sol          # Shared proxy fixture + signature helpers
+├── LiquidityProvider.t.sol      # Legacy lifecycle coverage
+├── LiquidityProvider.pause.t.sol       # Paused-state matrix
+├── LiquidityProvider.permit.t.sol      # Permit nonce consumption/replay
+├── LiquidityProvider.fees.t.sol        # Zero tier + ceiling rounding
+├── LiquidityProvider.intent.t.sol      # EIP-712 order-intent binding
+├── LiquidityProvider.events.t.sol      # Event assertions
+├── LiquidityManager.t.sol       # Legacy manager coverage
+├── LiquidityManager.initialize.t.sol   # Init validation branches
+├── LiquidityManager.admin.t.sol        # Rotation symmetry + events
+├── Governance.t.sol             # Safe/timelock rehearsal
+├── Migration.t.sol              # Wave 2 selector/calldata migration facts
+└── poc/                         # Auditor PoCs, retained as regression tests
 script/
 ├── Deploy.s.sol                 # Proxy deployment script
-├── Upgrade.s.sol                # Proxy upgrade script
+├── Upgrade.s.sol                # Proxy upgrade script (pre-migration)
+└── Governance.s.sol             # Timelock deploy + Safe calldata helpers
+scripts/
+├── check-storage-layout.sh      # Storage-layout regression gate
+└── storage_layout_check.py
+.storage-layout/                 # Last released layouts (gate baseline)
 deploy.sh                        # Testnet/mainnet deployment
-upgrade.sh                       # Testnet/mainnet upgrade
+upgrade.sh                       # Testnet/mainnet upgrade (pre-migration)
 ```
 
 ## Setup
@@ -146,6 +181,7 @@ forge build
 
 ```bash
 forge test -vvv
+./scripts/check-storage-layout.sh   # append-only storage layout gate
 ```
 
 ## Deployment
@@ -198,6 +234,10 @@ forge script script/Deploy.s.sol \
 ```
 
 ### Upgrade with upgrade.sh
+
+> **After the Wave 3 governance migration this script no longer works.** It signs with
+> the `admin1` EOA, which no longer owns the ProxyAdmins. Use the timelock flow in
+> `GOVERNANCE_MIGRATION.md` instead.
 
 Create a `.env.upgrade` file with your deployed contract addresses and admin1's private key:
 

@@ -42,12 +42,15 @@ contract LiquidityProviderTest is Test {
     address public admin2 = address(0xA2);
     address public treasury = address(0xB1);
     address public relayer = address(0xB2);
-    address public sender = address(0xC1);
+    address public sender;
     address public tempWallet;
     uint256 constant TEMP_WALLET_PK = 0xA11CE;
+    uint256 constant SENDER_PK = 0xC0FFEE;
     address public lpNode = address(0xC3);
     address public refundAddr = address(0xC4);
     address public nonAdmin = address(0xD1);
+
+    mapping(address => uint256) private _intentCursor;
 
     bytes32 constant ORDER_ID_1 = bytes32(uint256(1));
     bytes32 constant ORDER_ID_2 = bytes32(uint256(2));
@@ -57,6 +60,7 @@ contract LiquidityProviderTest is Test {
 
     function setUp() public {
         tempWallet = vm.addr(TEMP_WALLET_PK);
+        sender = vm.addr(SENDER_PK);
         usdc = new MockERC20("USD Coin", "USDC");
         eurc = new MockERC20("Euro Coin", "EURC");
 
@@ -121,6 +125,63 @@ contract LiquidityProviderTest is Test {
         return Types.PermitSig({deadline: 0, v: 0, r: bytes32(0), s: bytes32(0)});
     }
 
+    function _noIntent() internal pure returns (Types.OrderIntentSig memory) {
+        return Types.OrderIntentSig({deadline: 0, nonce: 0, v: 0, r: bytes32(0), s: bytes32(0)});
+    }
+
+    function _nextIntentNonce(address who) internal returns (uint256) {
+        uint256 nonce = _intentCursor[who];
+        if (nonce == 0) nonce = lp.intentNonce(who);
+        _intentCursor[who] = nonce + 1;
+        return nonce;
+    }
+
+    /// @dev The legacy suite creates orders through the relayer path; attach a
+    ///      valid sender intent so the fixtures keep testing what they were
+    ///      written for (5.1.2 is covered by LiquidityProvider.intent.t.sol).
+    function _attachIntent(Types.OrderParams memory params) internal returns (Types.OrderParams memory) {
+        uint256 pk;
+        if (params.sender == sender) {
+            pk = SENDER_PK;
+        } else if (params.sender == tempWallet) {
+            pk = TEMP_WALLET_PK;
+        } else {
+            return params;
+        }
+
+        uint256 nonce = _nextIntentNonce(params.sender);
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "OrderIntent(bytes32 orderId,address token,int256 amount,address temporaryWalletAddress,address refundAddress,uint8 protocolFee,uint256 deadline,uint256 nonce)"
+                ),
+                params.orderId,
+                params.token,
+                params.amount,
+                params.temporaryWalletAddress,
+                params.refundAddress,
+                uint8(params.protocolFee),
+                deadline,
+                nonce
+            )
+        );
+        bytes32 domain = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(bytes("CentiivLiquidityProvider")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(lp)
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domain, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+
+        params.intentSig = Types.OrderIntentSig({deadline: deadline, nonce: nonce, v: v, r: r, s: s});
+        return params;
+    }
+
     function _createOrder(
         bytes32 orderId,
         address _sender,
@@ -147,9 +208,10 @@ contract LiquidityProviderTest is Test {
             refundAddress: refundAddr,
             messageHash: bytes32(uint256(42)),
             protocolFee: feeTier,
-            permitSig: _noPermit()
+            permitSig: _noPermit(),
+            intentSig: _noIntent()
         });
-        return params;
+        return _attachIntent(params);
     }
 
     function testInitialize() public view {
@@ -324,8 +386,10 @@ contract LiquidityProviderTest is Test {
             refundAddress: refundAddr,
             messageHash: bytes32(0),
             protocolFee: Types.ProtocolFees.Basic,
-            permitSig: _noPermit()
+            permitSig: _noPermit(),
+            intentSig: _noIntent()
         });
+        params = _attachIntent(params);
 
         usdc.approve(address(lp), 1000e6);
 
@@ -1038,7 +1102,7 @@ contract LiquidityProviderTest is Test {
         lp.cancelSettlement(ORDER_ID_1);
     }
 
-    function testCancelSettlementRevertsIfPaused() public {
+    function testCancelSettlementSucceedsIfPaused() public {
         Types.OrderParams memory params = _createOrder(ORDER_ID_1, sender, 10_000e6, Types.ProtocolFees.Basic);
         usdc.approve(address(lp), 10_000e6);
 
@@ -1050,9 +1114,13 @@ contract LiquidityProviderTest is Test {
         vm.prank(admin1);
         lm.pause();
 
+        // 5.2.4: cancellation is a pure state reversal and must remain
+        // available while paused, otherwise a recorded settlement traps
+        // the order until unpause.
         vm.prank(relayer);
-        vm.expectRevert(Paused.selector);
         lp.cancelSettlement(ORDER_ID_1);
+
+        assertEq(lp.getOrderInfo(ORDER_ID_1).amount, 10_000e6);
     }
 
     function testRefund() public {

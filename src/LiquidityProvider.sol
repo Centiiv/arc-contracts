@@ -19,9 +19,27 @@ import "./interfaces/ILiquidityManager.sol";
 import "./interfaces/ILiquidityProvider.sol";
 import "./libraries/Types.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 contract LiquidityProvider is ILiquidityProvider, Initializable {
     using Types for *;
+
+    /// @notice EIP-712 domain for the order intent introduced in 5.1.2.
+    ///         Implemented locally rather than via OZ `EIP712Upgradeable`
+    ///         because the latter pulls in `Bytes.sol`, which requires the
+    ///         Cancun `MCOPY` opcode; these contracts compile for `paris` to
+    ///         stay deployable on Arc. Name/version are constants and the
+    ///         domain separator is recomputed per call, so no storage or
+    ///         initializer migration is involved.
+    string private constant EIP712_NAME = "CentiivLiquidityProvider";
+    string private constant EIP712_VERSION = "1";
+
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+
+    bytes32 private constant ORDER_INTENT_TYPEHASH = keccak256(
+        "OrderIntent(bytes32 orderId,address token,int256 amount,address temporaryWalletAddress,address refundAddress,uint8 protocolFee,uint256 deadline,uint256 nonce)"
+    );
 
     address public settingsContract;
     address public usdc;
@@ -30,13 +48,12 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
     mapping(bytes32 => Types.PendingRefund) public pendingRefunds;
     mapping(uint8 => int256) public tierFees;
 
-    uint256 private __gap;
+    /// @notice Per-sender nonce for EIP-712 order intents (5.1.2). Consumes the
+    ///         former gap slot; the gap is redeclared after it so future
+    ///         variables remain append-only.
+    mapping(address => uint256) public intentNonce;
 
-    modifier onlyRelayer() {
-        address _relayer = ILiquidityManager(settingsContract).getRelayerAddress();
-        if (msg.sender != _relayer) revert Unauthorized();
-        _;
-    }
+    uint256[50] private __gap;
 
     modifier onlySettingsAdmin() {
         address _admin1 = ILiquidityManager(settingsContract).getAdmin1();
@@ -70,8 +87,10 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
     }
 
     function createOrder(Types.OrderParams calldata params) external whenNotPaused {
-        // Relayer check removed — LP nodes call createOrder directly with their own
-        // wallet for onramp. settle() and refund() still enforce onlyRelayer.
+        // LP nodes call createOrder directly with their own wallet for on-ramp
+        // (self path, no signature). The relayer calls on behalf of off-ramp
+        // senders and must supply an EIP-712 order intent signed by the sender
+        // (5.1.2) so the deposit destination cannot be changed.
         if (params.sender == address(0)) revert ZeroAddress();
         if (params.amount <= 0) revert InvalidAmount();
         if (params.amount < Types.MIN_ORDER_AMOUNT) revert AmountBelowMinimum();
@@ -88,6 +107,13 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         address relayer = ILiquidityManager(settingsContract).getRelayerAddress();
         if (msg.sender != params.sender && msg.sender != relayer) {
             revert Unauthorized();
+        }
+
+        // Authorisation Guard: whenever the relayer acts for the sender, the
+        // sender must have signed this exact order. The permit/allowance still
+        // moves the tokens; the intent only proves where they may go.
+        if (msg.sender != params.sender) {
+            _verifyOrderIntent(params);
         }
 
         // Destination Guard: On-ramp LP can only target their own wallet
@@ -158,6 +184,8 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
 
         if (settlePercent <= 0 || settlePercent > Types.MAX_BPS) revert InvalidSettlePercent();
 
+        if (liquidityProvider == address(0)) revert ZeroAddress();
+
         Types.Order storage order = orders[orderId];
         if (order.orderId == bytes32(0)) revert OrderNotFound();
         if (order.currentBps == 0) revert OrderFulfilled();
@@ -199,7 +227,7 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         bytes32 orderId,
         address tokenAddress,
         Types.PermitSig calldata permitSig
-    ) external {
+    ) external whenNotPaused {
         Types.Order storage order = orders[orderId];
         if (order.orderId == bytes32(0)) revert OrderNotFound();
         if (tokenAddress != order.token) revert InvalidParameter();
@@ -236,7 +264,10 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         emit SettlementTransferred(orderId, ps.settlePercent);
     }
 
-    function cancelSettlement(bytes32 orderId) external whenNotPaused {
+    /// @notice Reverses a recorded settlement. Deliberately not pause-gated:
+    ///         it moves no tokens and is the first step of the only unwind path
+    ///         available while paused (5.2.4).
+    function cancelSettlement(bytes32 orderId) external {
         address _relayer = ILiquidityManager(settingsContract).getRelayerAddress();
         address _admin1 = ILiquidityManager(settingsContract).getAdmin1();
         address _admin2 = ILiquidityManager(settingsContract).getAdmin2();
@@ -326,8 +357,9 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
     ) internal {
         if (permitSig.r == bytes32(0)) return;
 
-        if (IERC20(token).allowance(owner, address(this)) >= value) return;
-
+        // Always attempt the permit. Skipping it when the current allowance
+        // already covers `value` leaves the nonce unconsumed, so the signature
+        // stays replayable from calldata until its deadline (5.2.15).
         try IERC20Permit(token).permit(
             owner,
             address(this),
@@ -336,23 +368,79 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
             permitSig.v,
             permitSig.r,
             permitSig.s
-        ) {} catch {
-            if (IERC20(token).allowance(owner, address(this)) < value) {
-                revert TransferFailed();
-            }
-        }
+        ) {} catch {}
+
+        if (IERC20(token).allowance(owner, address(this)) < value) revert TransferFailed();
+    }
+
+    /// @notice EIP-712 v4 domain separator. Recomputed per verification so a
+    ///         chain-id change can never replay an intent on a fork.
+    function _domainSeparatorV4() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes(EIP712_NAME)),
+                keccak256(bytes(EIP712_VERSION)),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    function _hashTypedDataV4(bytes32 structHash) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", _domainSeparatorV4(), structHash));
+    }
+
+    /// @notice Verifies the sender's EIP-712 authorisation for a relayer-created
+    ///         order and consumes one intent nonce. Reverts unless every field
+    ///         that decides where the deposited funds go matches the signature.
+    function _verifyOrderIntent(Types.OrderParams calldata params) internal {
+        Types.OrderIntentSig calldata sig = params.intentSig;
+
+        if (sig.r == bytes32(0)) revert InvalidSignature();
+        if (block.timestamp > sig.deadline) revert SignatureExpired();
+        // Monotonic rather than strictly sequential: a nonce may skip ahead,
+        // but a consumed nonce can never be reused. Gaps only ever invalidate
+        // the sender's own unused signatures.
+        if (sig.nonce < intentNonce[params.sender]) revert InvalidNonce();
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                ORDER_INTENT_TYPEHASH,
+                params.orderId,
+                params.token,
+                params.amount,
+                params.temporaryWalletAddress,
+                params.refundAddress,
+                uint8(params.protocolFee),
+                sig.deadline,
+                sig.nonce
+            )
+        );
+
+        (address signer, ECDSA.RecoverError err,) =
+            ECDSA.tryRecover(_hashTypedDataV4(structHash), sig.v, sig.r, sig.s);
+        if (err != ECDSA.RecoverError.NoError || signer != params.sender) revert InvalidSignature();
+
+        intentNonce[params.sender] = sig.nonce + 1;
     }
 
     function emergencyRefund(bytes32 orderId) external whenPaused {
+        Types.Order storage order = orders[orderId];
+        if (order.orderId == bytes32(0)) revert OrderNotFound();
+
         address _relayer = ILiquidityManager(settingsContract).getRelayerAddress();
         address _admin1 = ILiquidityManager(settingsContract).getAdmin1();
         address _admin2 = ILiquidityManager(settingsContract).getAdmin2();
-        if (msg.sender != _relayer && msg.sender != _admin1 && msg.sender != _admin2) {
+        if (
+            msg.sender != _relayer &&
+            msg.sender != _admin1 &&
+            msg.sender != _admin2 &&
+            msg.sender != order.sender
+        ) {
             revert Unauthorized();
         }
 
-        Types.Order storage order = orders[orderId];
-        if (order.orderId == bytes32(0)) revert OrderNotFound();
         if (order.isFulfilled) revert OrderFulfilled();
         if (order.isRefunded) revert OrderRefunded();
         if (pendingSettlements[orderId].orderId != bytes32(0)) revert PendingSettlementExists();
@@ -383,6 +471,9 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         return IERC20(token).balanceOf(user);
     }
 
+    /// @notice Updates a tier rate. `feeBps` is in fee units, not basis
+    ///         points: 1 unit = 0.001%, denominator 100,000. The cap of 10,000
+    ///         units is 10%. Zero is a valid promotional rate (5.2.3).
     function updateTierFee(uint8 tier, int256 feeBps) external onlySettingsAdmin {
         if (feeBps < 0 || feeBps > 10_000) revert InvalidFeePercent();
         tierFees[tier] = feeBps;
@@ -393,6 +484,13 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         return tierFees[tier];
     }
 
+    /// @notice Trusted escape hatch for a broken settings contract.
+    /// @dev Only `admin1` may call this, and the new address is not verified to
+    ///      implement `ILiquidityManager`. A mispointed settings contract
+    ///      disables every state-changing path, and recovery requires a further
+    ///      call from `admin1` as reported by the *new* contract. Supply the
+    ///      correct address in this call; there is no second chance otherwise.
+    ///      After the governance migration this path requires Safe quorum.
     function updateSettingsContract(address newSettingsContract) external {
         if (newSettingsContract == address(0)) revert ZeroAddress();
         address _admin1 = ILiquidityManager(settingsContract).getAdmin1();
@@ -406,7 +504,9 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
 
     function _calculateProtocolFee(int256 amount, Types.ProtocolFees tier) internal view returns (int256) {
         int256 tierBps = tierFees[uint8(tier)];
-        if (tierBps == 0) revert FeePercentNotSet();
+        // A zero rate is a valid (promotional) tier, not an unset one: the
+        // seeded tiers are non-zero and preserved across upgrades. Returning 0
+        // matches updateTierFee, which has always accepted 0 (5.2.3).
         if (amount <= 0) return 0;
 
         int256 numerator;
@@ -425,6 +525,9 @@ contract LiquidityProvider is ILiquidityProvider, Initializable {
         return feeWhole;
     }
 
+    /// @dev Rounds up per slice. With n slices the aggregate can exceed
+    ///      `ceil(total * feeBps / 100_000)` by at most n - 1 base units (5.2.5).
+    ///      The excess accrues to the treasury; the protocol never under-charges.
     function _calculateProtocolFeeFromBps(int256 amount, int256 feeBps) internal pure returns (int256) {
         if (amount <= 0) return 0;
 

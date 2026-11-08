@@ -49,6 +49,7 @@ interface ILiquidityProvider {
     function updateSettingsContract(address newSettingsContract) external;
     function settingsContract() external view returns (address);
     function usdc() external view returns (address);
+    function intentNonce(address sender) external view returns (uint256);
 
     event SettlementCancelled(bytes32 indexed orderId);
     event SettingsContractUpdated(address indexed oldSettingsContract, address indexed newSettingsContract);

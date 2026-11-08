@@ -37,6 +37,9 @@ library Types {
         bytes32 messageHash;
         ProtocolFees protocolFee;
         PermitSig permitSig;
+        // Appended in the 5.1.2 remediation. Required only when the relayer
+        // creates an order on behalf of `sender`; ignored on the self path.
+        OrderIntentSig intentSig;
     }
 
     struct PendingSettlement {
@@ -54,6 +57,17 @@ library Types {
 
     struct PermitSig {
         uint256 deadline;
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
+    }
+
+    /// @notice EIP-712 authorisation for a relayer-created order. Binds the
+    ///         sender's intent to every field that determines where the funds
+    ///         go, so a compromised relayer cannot redirect the deposit.
+    struct OrderIntentSig {
+        uint256 deadline;
+        uint256 nonce;
         uint8 v;
         bytes32 r;
         bytes32 s;
@@ -95,3 +109,6 @@ error NotPaused();
 error NoPendingAdmin();
 error AdminSlotConflict();
 error ContractAlreadyInitialized();
+error InvalidSignature();
+error SignatureExpired();
+error InvalidNonce();
