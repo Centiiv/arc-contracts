@@ -105,6 +105,38 @@ ProxyAdmin ownership transfers and `acceptAdmin1` are all ordinary Safe transact
 upgrade authority. 2-of-3 was chosen over 2-of-2 so losing one key does not
 permanently disable upgrades.
 
+### 2.2 Current Arc mainnet state (verified 8 Nov 2026)
+
+Read-only against `https://rpc.mainnet.arc.io`:
+
+| Item | Value |
+|---|---|
+| `LiquidityManager` proxy | `0xB648061376a696Daafb17D8107B18872ecC6889B` |
+| `LiquidityProvider` proxy | `0x7A343A92B580f47A3Cb473dacB43F09f9467033f` |
+| LM `ProxyAdmin` | `0xd454D48FbeA2bD631Cdf70a3a11089AC9d1e4f84` |
+| LP `ProxyAdmin` | `0x588a5Ece2ab68D61eD48674a0FE37a2F3f8F0C89` |
+| `ProxyAdmin` owner (both) | `0x31a432DF9c1d525a4A4522F33D6e369023AbE74b` (original `admin1` EOA) |
+| `LiquidityManager.admin1` | `0x31a432DF9c1d525a4A4522F33D6e369023AbE74b` |
+| `LiquidityManager.admin2` | `0xA62BE23BdF551A1bec11BdA9b2823B4bDAf2135b` |
+| `LiquidityManager.paused` | `false` |
+| LM implementation | `0x2Da36EF240a9DCC67319490829957DAE17e8b5E0` |
+| LP implementation | `0xA579A4AB3D8F86050580f4aBBCE4ac5638df1665` |
+
+Both `ProxyAdmin` contracts are still owned by the original `admin1` EOA, so **Wave 3
+has not been executed**. That is the first action in this runbook and the only step
+that must be signed by the old key.
+
+The entire sequence — Safe creation through the canonical factory, both ProxyAdmin
+transfers, `admin1` rotation, and a no-op upgrade through the 2-hour timelock — is
+rehearsed against this exact live state on a local fork:
+
+```sh
+ARC_MAINNET_RPC_URL=https://rpc.mainnet.arc.io \
+  forge test --match-contract GovernanceMainnetForkTest -vv
+```
+
+Nothing is broadcast. The fork test passed on 8 Nov 2026.
+
 Environment for the scripts:
 
 ```sh
