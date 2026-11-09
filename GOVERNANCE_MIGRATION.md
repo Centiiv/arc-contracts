@@ -110,7 +110,7 @@ bash deploy-safe.sh --mainnet --verify-only
 - [ ] `getThreshold() == 2`
 - [ ] `getOwners()` returns exactly the three intended, distinct addresses
 - [ ] slot 0 (singleton) is the canonical Safe address
-- [ ] fund the Safe with a small USDC amount for gas
+- [ ] fund each executing owner with a small USDC gas balance; the Safe itself does not pay gas
 
 **How it works operationally.** A transaction is proposed by one owner in
 Safe{Wallet} (or the Safe SDK), signed by owners until the threshold is met, then

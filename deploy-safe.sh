@@ -272,6 +272,7 @@ SAFE_ADDRESS="$NEW_SAFE" forge script script/DeploySafe.s.sol:DeploySafeScript \
   -vv
 echo ""
 echo "  Next:"
-echo "    1. Fund the Safe with a small USDC amount for gas."
+echo "    1. Fund each executing Safe owner with a small USDC gas balance"
+echo "       (the Safe itself does not pay gas)."
 echo "    2. Create .env.governance (see governance.sh --help)."
 echo "    3. bash governance.sh --$NETWORK --deploy-timelock"
