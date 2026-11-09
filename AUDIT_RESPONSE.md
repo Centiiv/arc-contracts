@@ -2,13 +2,14 @@
 
 **Repository:** `Centiiv/arc-contracts`
 **Commit under review:** `858eaf7`
+**Fix commit:** `28c7e11`
 **Scan date:** 23 October 2026
 **Response date:** 9 November 2026
 **Prepared by:** Office of the CTO, Centiiv
 **Companion artefacts:** `Centiiv - BugPoCer Report.pdf` (93 pp.), `Centiiv - Mutation Testing Results.csv`
 
-> **Fill before sending:** replace `<tx>` with the governance-migration transaction once it has
-> executed, and confirm the commit hash and response date. The contract fixes are in `e35e0e5`.
+**Remediation deployment:** Arc testnet (5042002); mainnet rollout pending
+**Testnet governance tx:** [`0xa3021f2c939bf6af77c24d703a0c031cd30a401d871b93570a2af54a0823b22c`](https://testnet.arcscan.app/tx/0xa3021f2c939bf6af77c24d703a0c031cd30a401d871b93570a2af54a0823b22c)
 
 ---
 
@@ -18,7 +19,7 @@ We have reviewed all 19 issues (39 finding sites) raised in the BugPoCer Lite re
 test-quality run. We thank the team for a report that is technically precise and, in almost every case,
 correct against the code.
 
-Two context points shape our dispositions:
+Three context points shape our dispositions:
 
 1. **The contracts are live on Arc mainnet** and have processed approximately 30,000 USDC. The
    deployment was made from a build that already contained the `feeBps` snapshot field and
@@ -29,12 +30,16 @@ Two context points shape our dispositions:
    eligibility are enforced off-chain against KYC'd counterparties. Where an invariant can be
    enforced cheaply on-chain we enforce it; where it is inherently identity- or balance-based we
    rely on the off-chain control and say so.
+3. **The remediation is deployed and verified on Arc testnet.** The live mainnet proxies remain on
+   the pre-fix build until this response is concluded; the mainnet rollout will use the same commits
+   and the same governance topology. The governance transaction cited in §4.1 is the testnet
+   execution.
 
 ### Disposition
 
 | Status | Count | Meaning |
 |---|---|---|
-| Fixed | 8 | Change merged; commit and test referenced |
+| Fixed | 8 | Change merged and verified on Arc testnet; mainnet rollout follows |
 | Accepted | 8 | Behaviour understood and intended; rationale recorded |
 | Disputed | 3 | Factually incorrect, or the recommended fix would introduce new risk |
 
@@ -42,25 +47,25 @@ Two context points shape our dispositions:
 
 | ID | Issue | Severity | Status | Reference |
 |---|---|---|---|---|
-| 5.1.1 | Missing pause check | Medium | Fixed | `e35e0e5` |
-| 5.1.2 | Unbound relayer order creation | Medium | Fixed | `e35e0e5` |
+| 5.1.1 | Missing pause check | Medium | Fixed | `28c7e11` |
+| 5.1.2 | Unbound relayer order creation | Medium | Fixed | `28c7e11` |
 | 5.1.3 | On-ramp orders share unreserved temp-wallet funds | Medium | Accepted (mitigated off-chain) | §3.3 |
 | 5.1.4 | Upgrade struct field default zero fee | Medium | Disputed | §3.4 |
-| 5.2.1 | ProxyAdmin ownership not tied to dual-admin rotation | Low | Fixed | `<tx>` |
-| 5.2.2 | Single admin key bypasses dual-admin governance | Low | Accepted; docs corrected | `e35e0e5` (docs) |
-| 5.2.3 | Zero tier fee accepted by setter but rejected in createOrder | Low | Fixed | `e35e0e5` |
-| 5.2.4 | Pending settlements cannot be cleared while paused | Low | Fixed | `e35e0e5` |
+| 5.2.1 | ProxyAdmin ownership not tied to dual-admin rotation | Low | Fixed | testnet tx `0xa3021f2c939bf6af77c24d703a0c031cd30a401d871b93570a2af54a0823b22c` |
+| 5.2.2 | Single admin key bypasses dual-admin governance | Low | Accepted; docs corrected | `28c7e11` (docs) |
+| 5.2.3 | Zero tier fee accepted by setter but rejected in createOrder | Low | Fixed | `28c7e11` |
+| 5.2.4 | Pending settlements cannot be cleared while paused | Low | Fixed | `28c7e11` |
 | 5.2.5 | Per-slice fee rounding exceeds order fee cap | Low | Accepted (bounded) | §4.5 |
-| 5.2.6 | Missing sender authorization emergency refund | Low | Fixed | `e35e0e5` |
+| 5.2.6 | Missing sender authorization emergency refund | Low | Fixed | `28c7e11` |
 | 5.2.7 | Non-atomic upgrade migration | Low | Disputed in part; hardening deferred | §4.7 |
 | 5.2.8 | OrderId squatting frontrun | Low | Accepted (known low priority) | §4.8 |
 | 5.2.9 | Relayer-chosen settlement recipient not bound on-chain | Low | Accepted (by design) | §4.9 |
 | 5.2.10 | Unearned fee tier selection | Low | Accepted (by design) | §4.10 |
 | 5.2.11 | Unvalidated self-referential authority pointer | Low | Accepted (trusted path) | §4.11 |
-| 5.2.12 | Fee unit is 1/100,000 but documented as basis points | Low | Disputed as code defect; docs corrected | `e35e0e5` (docs) |
-| 5.2.13 | Missing zero address check (`liquidityProvider`) | Low | Fixed | `e35e0e5` |
+| 5.2.12 | Fee unit is 1/100,000 but documented as basis points | Low | Disputed as code defect; docs corrected | `28c7e11` (docs) |
+| 5.2.13 | Missing zero address check (`liquidityProvider`) | Low | Fixed | `28c7e11` |
 | 5.2.14 | Single admin can revoke recorded settlement | Low | Accepted (by design) | §4.14 |
-| 5.2.15 | Unconsumed permit signature replay | Low | Fixed | `e35e0e5` |
+| 5.2.15 | Unconsumed permit signature replay | Low | Fixed | `28c7e11` |
 
 ---
 
@@ -68,7 +73,10 @@ Two context points shape our dispositions:
 
 ### 2.1 Deployment state
 
-- Arc mainnet, single deployment, ~30,000 USDC processed.
+- Arc mainnet, single production deployment, ~30,000 USDC processed.
+- Remediation build: deployed and verified on Arc testnet (chain 5042002). Mainnet deployment is
+  intentionally gated until this response is concluded; the live mainnet proxies remain on the
+  pre-fix build.
 - `LiquidityManager` and `LiquidityProvider` sit behind `TransparentUpgradeableProxy`; two independent
   `ProxyAdmin` contracts.
 - Settlement and refund flows run continuously, so the contracts cannot be treated as greenfield for
@@ -85,9 +93,9 @@ intentional headroom recorded during context validation. Values are internally c
 
 | Party | Trust | Enforced by |
 |---|---|---|
-| `admin1`, `admin2` | Trusted | `onlyAdmin` / `onlySettingsAdmin`; `admin1` will be a 2-of-3 Safe (§6) |
+| `admin1`, `admin2` | Trusted | `onlyAdmin` / `onlySettingsAdmin`; on testnet `admin1` is a 2-of-3 Safe, mainnet migration pending (§6) |
 | Relayer | Semi-trusted | Contract caller checks; **authoritative policy layer off-chain** |
-| ProxyAdmin owner | Trusted | `Ownable`; moving to a 2-of-3 Safe behind a 2-hour timelock (§6) |
+| ProxyAdmin owner | Trusted | `Ownable`; testnet uses a 2-of-3 Safe behind a 2-hour timelock, mainnet migration pending (§6) |
 | Temp wallet key holders | Trusted for their own funds | Key custody; off-ramp keys held by Centiiv, on-ramp by the LP node |
 | On-ramp order creators | **Untrusted by the contract**, KYC'd commercially | Relayer refuses to settle non-vetted orders |
 | LP nodes | Untrusted by the contract, KYC'd commercially | Relayer selects payout recipients and tiers; lease engine governs capacity |
@@ -243,9 +251,9 @@ old key's unilateral upgrade authority — the one scenario rotation exists to h
 
 **Implemented:**
 
-- Both `ProxyAdmin` contracts are owned by a **2-of-3 Safe** (`admin1`, `admin2`, `recovery`), behind
-  an OpenZeppelin `TimelockController` with a 2-hour delay. Upgrade chain:
-  `Safe → Timelock → ProxyAdmin → proxy`.
+- On testnet, both `ProxyAdmin` contracts are owned by the OpenZeppelin `TimelockController` (2-hour
+  delay), which is controlled by a **2-of-3 Safe** (`admin1`, `admin2`, `recovery`). Upgrade chain:
+  `Safe → Timelock → ProxyAdmin → proxy`. The mainnet migration will apply the same topology.
 - `admin1` on-chain is set to the Safe, so `transferAdmin1`, `acceptAdmin1` and `updateSettingsContract`
   now require Safe quorum. Operational actions (`pause`, `unpause`, `updateProtocolAddress`,
   `setTokenSupported`, `updateTierFee`) remain single-key via `admin2`, preserving instant incident
@@ -256,7 +264,11 @@ old key's unilateral upgrade authority — the one scenario rotation exists to h
 **Residual, stated:** `transferAdmin2` remains `onlyAdmin2`. Closing it requires a contract change and
 is tracked in `backlogs.md`.
 
-`<tx>` records the migration.
+On Arc testnet, the Safe was migrated to v1.5.0 in place through Safe{Wallet}. The governance batch
+`0xa3021f2c939bf6af77c24d703a0c031cd30a401d871b93570a2af54a0823b22c` then executed the two
+ProxyAdmin ownership transfers and the `admin1` rotation. The testnet timelock is
+`0x6ee7b3faad4211db9a722a5bc4546c233431db3f`. The live mainnet ProxyAdmins remain with the original
+`admin1` EOA; the same migration is queued for mainnet after this response is concluded.
 
 ---
 
@@ -497,11 +509,16 @@ request rather than claimed as complete.
 
 | Control | Implementation |
 |---|---|
-| Upgrade authority | 2-of-3 Safe (`admin1`, `admin2`, `recovery`) owns both ProxyAdmins |
+| Upgrade authority | Testnet: 2-of-3 Safe (`admin1`, `admin2`, `recovery`) controls both ProxyAdmins through the timelock. Mainnet: original `admin1` EOA until rollout |
 | Delay | OpenZeppelin `TimelockController`, `minDelay = 2 hours`, between Safe and ProxyAdmin |
-| `admin1` | Set to the Safe, so admin rotation and `updateSettingsContract` require quorum |
+| Testnet timelock | `0x6ee7b3faad4211db9a722a5bc4546c233431db3f` |
+| Safe contract version | Testnet Safe: v1.5.0, migrated in place through Safe{Wallet} |
+| `admin1` | Testnet: set to the Safe, so admin rotation and `updateSettingsContract` require quorum. Mainnet: pending |
 | Incident response | `pause()` remains single-key and instant; the sequence is pause → schedule → 2h → execute |
-| Monitoring | Backend watchers alert Discord on `CallScheduled` / `Cancelled` / `Executed`, proxy `Upgraded`, ProxyAdmin `OwnershipTransferred` and `AdminChanged` |
+| Monitoring | Backend watchers are configured to alert Discord on `CallScheduled` / `Cancelled` / `Executed`, proxy `Upgraded`, ProxyAdmin `OwnershipTransferred` and `AdminChanged` |
+
+The topology above is live on Arc testnet. On mainnet, the ProxyAdmins are still owned by the original
+`admin1` EOA; the same Safe/timelock migration will execute after this response is concluded.
 
 A 2-of-3 was chosen over 2-of-2 so that loss of a single key cannot permanently disable upgrades.
 Timelock roles are configured at deployment with no external admin: the controller is deployed with
@@ -537,7 +554,8 @@ order; the documentation now states the distinction.
 
 1. Every "Fixed" item ships with a test that fails on the pre-fix code and passes after it.
 2. The auditor's PoCs are retained under `test/poc/` and run in CI.
-3. Each fix references its merge commit; the governance migration references its transaction.
+3. Each fix references its merge commit; the testnet governance migration references its transaction.
+   The mainnet migration transaction will be added when the rollout executes.
 4. The mutation score is reported as measured at scan time (78.5%); the survivor categories are now covered by explicit tests, and a re-run is available on request.
 5. We invite a re-scan against the post-fix commit.
 6. We request clarification on 5.1.4 (§3.4) and on the `upgrade.sh` absence claim in 5.2.7 (§4.7).
