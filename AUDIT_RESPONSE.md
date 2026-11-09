@@ -3,13 +3,12 @@
 **Repository:** `Centiiv/arc-contracts`
 **Commit under review:** `858eaf7`
 **Scan date:** 23 October 2026
-**Response date:** 8 November 2026
+**Response date:** 9 November 2026
 **Prepared by:** Office of the CTO, Centiiv
 **Companion artefacts:** `Centiiv - BugPoCer Report.pdf` (93 pp.), `Centiiv - Mutation Testing Results.csv`
 
-> **Fill before sending:** every `<commit>` placeholder below must be replaced with the merge
-> commit that carries the fix, and `<tx>` with the governance-migration transaction. The response
-> date must also be updated to the send date.
+> **Fill before sending:** replace `<tx>` with the governance-migration transaction once it has
+> executed, and confirm the commit hash and response date. The contract fixes are in `e35e0e5`.
 
 ---
 
@@ -43,25 +42,25 @@ Two context points shape our dispositions:
 
 | ID | Issue | Severity | Status | Reference |
 |---|---|---|---|---|
-| 5.1.1 | Missing pause check | Medium | Fixed | `<commit>` |
-| 5.1.2 | Unbound relayer order creation | Medium | Fixed | `<commit>` |
+| 5.1.1 | Missing pause check | Medium | Fixed | `e35e0e5` |
+| 5.1.2 | Unbound relayer order creation | Medium | Fixed | `e35e0e5` |
 | 5.1.3 | On-ramp orders share unreserved temp-wallet funds | Medium | Accepted (mitigated off-chain) | §3.3 |
 | 5.1.4 | Upgrade struct field default zero fee | Medium | Disputed | §3.4 |
 | 5.2.1 | ProxyAdmin ownership not tied to dual-admin rotation | Low | Fixed | `<tx>` |
-| 5.2.2 | Single admin key bypasses dual-admin governance | Low | Accepted; docs corrected | `<commit>` (docs) |
-| 5.2.3 | Zero tier fee accepted by setter but rejected in createOrder | Low | Fixed | `<commit>` |
-| 5.2.4 | Pending settlements cannot be cleared while paused | Low | Fixed | `<commit>` |
+| 5.2.2 | Single admin key bypasses dual-admin governance | Low | Accepted; docs corrected | `e35e0e5` (docs) |
+| 5.2.3 | Zero tier fee accepted by setter but rejected in createOrder | Low | Fixed | `e35e0e5` |
+| 5.2.4 | Pending settlements cannot be cleared while paused | Low | Fixed | `e35e0e5` |
 | 5.2.5 | Per-slice fee rounding exceeds order fee cap | Low | Accepted (bounded) | §4.5 |
-| 5.2.6 | Missing sender authorization emergency refund | Low | Fixed | `<commit>` |
+| 5.2.6 | Missing sender authorization emergency refund | Low | Fixed | `e35e0e5` |
 | 5.2.7 | Non-atomic upgrade migration | Low | Disputed in part; hardening deferred | §4.7 |
 | 5.2.8 | OrderId squatting frontrun | Low | Accepted (known low priority) | §4.8 |
 | 5.2.9 | Relayer-chosen settlement recipient not bound on-chain | Low | Accepted (by design) | §4.9 |
 | 5.2.10 | Unearned fee tier selection | Low | Accepted (by design) | §4.10 |
 | 5.2.11 | Unvalidated self-referential authority pointer | Low | Accepted (trusted path) | §4.11 |
-| 5.2.12 | Fee unit is 1/100,000 but documented as basis points | Low | Disputed as code defect; docs corrected | `<commit>` (docs) |
-| 5.2.13 | Missing zero address check (`liquidityProvider`) | Low | Fixed | `<commit>` |
+| 5.2.12 | Fee unit is 1/100,000 but documented as basis points | Low | Disputed as code defect; docs corrected | `e35e0e5` (docs) |
+| 5.2.13 | Missing zero address check (`liquidityProvider`) | Low | Fixed | `e35e0e5` |
 | 5.2.14 | Single admin can revoke recorded settlement | Low | Accepted (by design) | §4.14 |
-| 5.2.15 | Unconsumed permit signature replay | Low | Fixed | `<commit>` |
+| 5.2.15 | Unconsumed permit signature replay | Low | Fixed | `e35e0e5` |
 
 ---
 
@@ -487,8 +486,10 @@ every surviving mutant corresponds to code that is either correct today or non-s
 ### 5.3 Result after remediation
 
 The suite now includes the auditor's Proof-of-Concept tests under `test/poc/`, retained permanently as
-regression tests, plus the coverage gaps above. The mutation run will be re-executed against the
-post-fix commit and attached as an addendum.
+regression tests, plus the coverage gaps above. We have not re-run the mutation suite; the original
+78.5% remains the last measured score. Each of the 37 surviving mutants falls into one of the
+categories above and now has an explicit test or a deleted/dead construct. A re-run is available on
+request rather than claimed as complete.
 
 ---
 
@@ -537,7 +538,7 @@ order; the documentation now states the distinction.
 1. Every "Fixed" item ships with a test that fails on the pre-fix code and passes after it.
 2. The auditor's PoCs are retained under `test/poc/` and run in CI.
 3. Each fix references its merge commit; the governance migration references its transaction.
-4. The mutation run is re-executed against the post-fix commit and attached as an addendum.
+4. The mutation score is reported as measured at scan time (78.5%); the survivor categories are now covered by explicit tests, and a re-run is available on request.
 5. We invite a re-scan against the post-fix commit.
 6. We request clarification on 5.1.4 (§3.4) and on the `upgrade.sh` absence claim in 5.2.7 (§4.7).
 
@@ -570,4 +571,4 @@ Signed for Centiiv:
 
 **_________________________**
 Chief Technology Officer
-8 November 2026
+9 November 2026

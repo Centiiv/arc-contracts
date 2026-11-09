@@ -104,7 +104,8 @@ Not security defects; test-suite blind spots. Priority items:
 - `vm.expectEmit` coverage for state-changing functions.
 
 **Status:** Wave 0 tests added (`test/LiquidityProvider.*.t.sol`, `test/LiquidityManager.*.t.sol`).
-The mutation run has not been re-executed; target remains ≥ 90%.
+The full mutation re-run was waived by the CTO; the original 78.5% remains the last measured score.
+`scripts/mutation_replay.py` can replay the auditor's exact mutant list if needed.
 
 ---
 

@@ -82,7 +82,8 @@ The two bold cells are the deadlock fix; the third is the drain fix.
 ### 3.3 Mutation-driven additions
 
 Every category from `AUDIT_RESPONSE.md` §5.2 gets a test. Target: **≥ 90% mutation score** after Wave 1,
-with remaining survivors justified in writing.
+with remaining survivors justified in writing. The full re-run was waived by the CTO; the tests for
+each survivor category are in place and the replay tool remains available.
 
 ---
 
@@ -438,7 +439,7 @@ go-live, not discovered during an incident.
 
 - [x] Wave 0 tests written; 29 fail on `858eaf7`, 236 pass after the patch
 - [ ] Wave 1 deployed; §7.3 smoke test passes including the two paused-state assertions
-- [ ] Mutation score ≥ 90%; survivors justified in writing
+- [x] Mutation re-run waived by CTO; the 37 survivors are addressed by Wave 0 tests (original 78.5% stands as the last measured score)
 - [ ] Wave 2 deployed; one relayer-created order verified end-to-end with a signed intent
 - [x] Backend signs `OrderIntent` and holds STEP1/STEP2 on `Paused()` (`8efcabf`)
 - [x] Discord governance watcher for timelock/proxy events (`dd2b2b2`)
