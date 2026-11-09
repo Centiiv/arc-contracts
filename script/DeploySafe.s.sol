@@ -30,7 +30,7 @@ interface ISafe {
     function isOwner(address owner) external view returns (bool);
 }
 
-/// @notice Deploys a Safe v1.4.1 proxy on Arc.
+/// @notice Deploys a Safe v1.5.0 proxy on Arc.
 ///
 ///         The Safe **singleton, proxy factory and fallback handler are already
 ///         deployed at their canonical addresses** on Arc mainnet (5042) and
@@ -48,12 +48,13 @@ interface ISafe {
 ///         The deployer pays a few cents of USDC gas. The resulting proxy is
 ///         the Safe address used for SAFE_ADDRESS in Governance.s.sol.
 contract DeploySafeScript is Script {
-    // Canonical Safe v1.4.1 deployments (safe-deployments, chain 5042 and
+    // Canonical Safe v1.5.0 deployments (safe-deployments, chain 5042 and
     // 5042002 are registered as "canonical").
-    address internal constant CANONICAL_SAFE = 0x41675C099F32341bf84BFc5382aF534df5C7461a;
-    address internal constant CANONICAL_SAFE_L2 = 0x29fcB43b46531BcA003ddC8FCB67FFE91900C762;
-    address internal constant CANONICAL_PROXY_FACTORY = 0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67;
-    address internal constant CANONICAL_FALLBACK_HANDLER = 0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99;
+    address internal constant CANONICAL_SAFE = 0xFf51A5898e281Db6DfC7855790607438dF2ca44b;
+    address internal constant CANONICAL_SAFE_L2 = 0xEdd160fEBBD92E350D4D398fb636302fccd67C7e;
+    address internal constant CANONICAL_PROXY_FACTORY = 0x14F2982D601c9458F93bd70B218933A6f8165e7b;
+    address internal constant CANONICAL_FALLBACK_HANDLER = 0x3EfCBb83A4A7AfcB4F68D501E2c2203a38be77f4;
+    address internal constant CANONICAL_SAFE_MIGRATION = 0x6439e7ABD8Bb915A5263094784C5CF561c4172AC;
 
     uint256 internal constant ARC_MAINNET = 5042;
     uint256 internal constant ARC_TESTNET = 5042002;
@@ -155,6 +156,31 @@ contract DeploySafeScript is Script {
         console.logBytes(initializer);
         console.log("singleton:", vm.envOr("SAFE_SINGLETON", CANONICAL_SAFE));
         console.log("factory:", CANONICAL_PROXY_FACTORY);
+    }
+
+    /// @notice Prints the Safe transaction that migrates an existing pre-1.5.0
+    ///         Safe in place. The transaction must use operation = DELEGATECALL
+    ///         (1); the Safe address, owners, threshold and storage are preserved.
+    ///
+    ///         Use the standard variant when the current singleton is Safe, and
+    ///         the L2 variant when it is SafeL2. Safe{Wallet} chooses the same
+    ///         function automatically under Settings -> Contract version.
+    function printMigration() external view {
+        console.log("SafeMigration v1.5.0:", CANONICAL_SAFE_MIGRATION);
+        console.log("operation: DELEGATECALL (1)");
+        console.log("value: 0");
+        console.log("");
+        console.log("Standard Safe (migrateSingleton):");
+        console.logBytes(abi.encodeWithSignature("migrateSingleton()"));
+        console.log("");
+        console.log("SafeL2 (migrateL2Singleton):");
+        console.logBytes(abi.encodeWithSignature("migrateL2Singleton()"));
+        console.log("");
+        console.log("Standard + fallback handler:");
+        console.logBytes(abi.encodeWithSignature("migrateWithFallbackHandler()"));
+        console.log("");
+        console.log("SafeL2 + fallback handler:");
+        console.logBytes(abi.encodeWithSignature("migrateL2WithFallbackHandler()"));
     }
 
     function _defaultSingleton() internal view returns (address) {

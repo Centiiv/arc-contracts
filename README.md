@@ -318,7 +318,7 @@ forge script script/Upgrade.s.sol:UpgradeScript:runLP \
 ### Deploy a Safe and the Wave 3 timelock
 
 The Safe singleton, proxy factory and fallback handler are already deployed at
-their canonical v1.4.1 addresses on Arc. `scripts/deploy-safe.sh` only creates the
+their canonical v1.5.0 addresses on Arc. `scripts/deploy-safe.sh` only creates the
 per-Safe proxy through the canonical factory.
 
 The Safe owners and governance addresses live in the same `.env.test` / `.env.main`:
@@ -330,7 +330,7 @@ SAFE_ADMIN1=0x...        # defaults to ADMIN1
 SAFE_ADMIN2=0x...        # defaults to ADMIN2
 SAFE_RECOVERY=0x...      # defaults to RECOVERY
 SAFE_THRESHOLD=2
-SAFE_SINGLETON=          # blank -> canonical v1.4.1 on Arc
+SAFE_SINGLETON=          # blank -> canonical v1.5.0 on Arc
 SAFE_PROXY_FACTORY=
 SAFE_FALLBACK_HANDLER=
 SAFE_ADDRESS=            # written back by scripts/deploy-safe.sh
@@ -343,6 +343,11 @@ Then:
 bash scripts/deploy-safe.sh --mainnet --dry-run    # simulate
 bash scripts/deploy-safe.sh --mainnet              # deploy + verify, writes SAFE_ADDRESS
 bash scripts/deploy-safe.sh --mainnet --verify-only
+
+# Existing Safe on 1.4.1 (or older): Safe{Wallet} -> Settings -> Contract version
+# -> Update. The dashboard migration keeps the address, owners and threshold.
+# To build the same transaction manually:
+bash scripts/deploy-safe.sh --mainnet --print-migration
 
 bash scripts/governance.sh --mainnet               # show configuration
 bash scripts/governance.sh --mainnet --deploy-timelock

@@ -1,11 +1,12 @@
 #!/bin/bash
 #
-# Deploy a 2-of-3 Safe on Arc through the canonical Safe v1.4.1 factory.
+# Deploy a 2-of-3 Safe on Arc through the canonical Safe v1.5.0 factory.
 #
 #   bash scripts/deploy-safe.sh --mainnet
 #   bash scripts/deploy-safe.sh --testnet
-#   bash scripts/deploy-safe.sh --mainnet --dry-run     # simulate, do not broadcast
-#   bash scripts/deploy-safe.sh --mainnet --verify-only # verify an existing SAFE_ADDRESS
+#   bash scripts/deploy-safe.sh --mainnet --dry-run        # simulate, do not broadcast
+#   bash scripts/deploy-safe.sh --mainnet --verify-only    # verify an existing SAFE_ADDRESS
+#   bash scripts/deploy-safe.sh --mainnet --print-migration # migrate an old Safe in place
 #
 # Reads .env.test or .env.main (selected by the network flag):
 #
@@ -15,9 +16,9 @@
 #   SAFE_RECOVERY=0x...      # defaults to RECOVERY
 #   # optional:
 #   SAFE_THRESHOLD=2
-#   SAFE_SINGLETON=0x41675C099F32341bf84BFc5382aF534df5C7461a
-#   SAFE_PROXY_FACTORY=0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67
-#   SAFE_FALLBACK_HANDLER=0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99
+#   SAFE_SINGLETON=0xFf51A5898e281Db6DfC7855790607438dF2ca44b
+#   SAFE_PROXY_FACTORY=0x14F2982D601c9458F93bd70B218933A6f8165e7b
+#   SAFE_FALLBACK_HANDLER=0x3EfCBb83A4A7AfcB4F68D501E2c2203a38be77f4
 #   SAFE_SALT_NONCE=0
 #   SAFE_ADDRESS=            # filled in by this script after a successful deploy
 #
@@ -36,6 +37,7 @@ cd "$PROJECT_ROOT" || exit 1
 NETWORK="testnet"
 DRY_RUN=0
 VERIFY_ONLY=0
+PRINT_MIGRATION=0
 
 for arg in "$@"; do
   case $arg in
@@ -43,14 +45,16 @@ for arg in "$@"; do
     --testnet|--network=testnet) NETWORK="testnet" ;;
     --dry-run) DRY_RUN=1 ;;
     --verify-only) VERIFY_ONLY=1 ;;
+    --print-migration) PRINT_MIGRATION=1 ;;
     -h|--help)
       cat <<'USAGE'
-Deploy a 2-of-3 Safe on Arc through the canonical Safe v1.4.1 factory.
+Deploy a 2-of-3 Safe on Arc through the canonical Safe v1.5.0 factory.
 
   bash scripts/deploy-safe.sh --mainnet
   bash scripts/deploy-safe.sh --testnet
   bash scripts/deploy-safe.sh --mainnet --dry-run
   bash scripts/deploy-safe.sh --mainnet --verify-only
+  bash scripts/deploy-safe.sh --mainnet --print-migration
 
 Reads .env.test or .env.main:
 
@@ -67,6 +71,9 @@ Reads .env.test or .env.main:
 
 The Safe singleton/factory are already deployed on Arc. This script creates
 the per-Safe proxy and writes SAFE_ADDRESS back to the env file.
+
+--print-migration prints the DELEGATECALL calldata for upgrading an existing
+pre-1.5.0 Safe in place. It does not sign or broadcast anything.
 USAGE
       exit 0
       ;;
@@ -82,6 +89,17 @@ echo "  Network: $NETWORK"
 echo "  Env:     $ENV_FILE"
 echo "============================================"
 echo ""
+
+# ---------------------------------------------------------------- print-migration
+if [ "$PRINT_MIGRATION" = "1" ]; then
+  echo "[1/1] Safe v1.5.0 migration calldata"
+  echo ""
+  forge script script/DeploySafe.s.sol:DeploySafeScript \
+    --sig "printMigration()" \
+    --rpc-url "$RPC_URL" \
+    -vv
+  exit 0
+fi
 
 if [ -f "$ENV_FILE" ]; then
   echo "  Loading $ENV_FILE"

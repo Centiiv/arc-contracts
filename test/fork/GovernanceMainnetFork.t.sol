@@ -50,10 +50,10 @@ contract GovernanceMainnetForkTest is Test {
     address internal constant LM_PROXY_ADMIN = 0xd454D48FbeA2bD631Cdf70a3a11089AC9d1e4f84;
     address internal constant LP_PROXY_ADMIN = 0x588a5Ece2ab68D61eD48674a0FE37a2F3f8F0C89;
 
-    // Canonical Safe v1.4.1 deployments on Arc (safe-deployments).
-    address internal constant SAFE_SINGLETON = 0x41675C099F32341bf84BFc5382aF534df5C7461a;
-    address internal constant SAFE_PROXY_FACTORY = 0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67;
-    address internal constant SAFE_FALLBACK_HANDLER = 0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99;
+    // Canonical Safe v1.5.0 deployments on Arc (safe-deployments).
+    address internal constant SAFE_SINGLETON = 0xFf51A5898e281Db6DfC7855790607438dF2ca44b;
+    address internal constant SAFE_PROXY_FACTORY = 0x14F2982D601c9458F93bd70B218933A6f8165e7b;
+    address internal constant SAFE_FALLBACK_HANDLER = 0x3EfCBb83A4A7AfcB4F68D501E2c2203a38be77f4;
 
     bytes32 internal constant IMPLEMENTATION_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
@@ -102,7 +102,7 @@ contract GovernanceMainnetForkTest is Test {
             uint256(0)
         );
 
-        assertEq(ISafeAccount(safe).VERSION(), "1.4.1");
+        assertEq(ISafeAccount(safe).VERSION(), "1.5.0");
         assertEq(ISafeAccount(safe).getThreshold(), 2);
         address[] memory actualOwners = ISafeAccount(safe).getOwners();
         assertEq(actualOwners.length, 3);

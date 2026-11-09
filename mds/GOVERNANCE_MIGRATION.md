@@ -40,24 +40,26 @@ requires a timelocked operation. There is no external admin key to renounce.
 ### 2.1 How the Safe is deployed on Arc
 
 A Safe is not one contract. The **Safe singleton, `SafeProxyFactory` and
-`CompatibilityFallbackHandler` are already deployed at their canonical v1.4.1
+`CompatibilityFallbackHandler` are already deployed at their canonical v1.5.0
 addresses on Arc mainnet (5042) and testnet (5042002)** — Safe's public deployment
 registry marks both chains as canonical. You deploy **one proxy per Safe** through the
 canonical factory; the singleton is shared by every Safe on the chain.
 
 | Contract | Canonical address (Arc) |
 |---|---|
-| Safe singleton (v1.4.1) | `0x41675C099F32341bf84BFc5382aF534df5C7461a` |
-| SafeL2 singleton (v1.4.1) | `0x29fcB43b46531BcA003ddC8FCB67FFE91900C762` |
-| SafeProxyFactory | `0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67` |
-| CompatibilityFallbackHandler | `0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99` |
-| MultiSendCallOnly | `0x9641d764fc13c8B624c04430C7356C1C7C8102e2` |
+| Safe singleton (v1.5.0) | `0xFf51A5898e281Db6DfC7855790607438dF2ca44b` |
+| SafeL2 singleton (v1.5.0) | `0xEdd160fEBBD92E350D4D398fb636302fccd67C7e` |
+| SafeProxyFactory (v1.5.0) | `0x14F2982D601c9458F93bd70B218933A6f8165e7b` |
+| CompatibilityFallbackHandler (v1.5.0) | `0x3EfCBb83A4A7AfcB4F68D501E2c2203a38be77f4` |
+| SafeMigration (target v1.5.0) | `0x6439e7ABD8Bb915A5263094784C5CF561c4172AC` |
+| MultiSendCallOnly (v1.5.0) | `0xA83c336B20401Af773B6219BA5027174338D1836` |
 
 Confirm the code is present before deploying:
 
 ```sh
-cast codehash 0x41675C099F32341bf84BFc5382aF534df5C7461a --rpc-url https://rpc.mainnet.arc.io
-cast codehash 0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67 --rpc-url https://rpc.mainnet.arc.io
+cast codehash 0xFf51A5898e281Db6DfC7855790607438dF2ca44b --rpc-url https://rpc.mainnet.arc.io
+cast codehash 0x14F2982D601c9458F93bd70B218933A6f8165e7b --rpc-url https://rpc.mainnet.arc.io
+cast codehash 0x6439e7ABD8Bb915A5263094784C5CF561c4172AC --rpc-url https://rpc.mainnet.arc.io
 ```
 
 Two ways to create the proxy:
@@ -101,13 +103,26 @@ The deployer key only pays gas; it is **not** a Safe owner. On success it writes
 The Solidity counterpart is `script/DeploySafe.s.sol`; the shell wrapper matches
 `scripts/deploy.sh` / `scripts/upgrade.sh` conventions (network flag, balance check, build, verify).
 
+**Upgrading an existing pre-1.5.0 Safe.** Safe{Wallet} flags v1.4.1 Safes as
+unsupported. Use **Settings → Contract version → Update**, or print the equivalent
+Safe transaction:
+
+```sh
+bash scripts/deploy-safe.sh --mainnet --print-migration
+```
+
+The migration is a **DELEGATECALL** to the v1.5.0 `SafeMigration` contract. The Safe
+address, owners, threshold and storage are unchanged. Use `migrateSingleton()` for a
+standard Safe and `migrateL2Singleton()` for SafeL2; the `*WithFallbackHandler`
+variants also update the fallback handler to v1.5.0.
+
 Verify:
 
 ```sh
 bash scripts/deploy-safe.sh --mainnet --verify-only
 ```
 
-- [ ] `VERSION() == "1.4.1"`
+- [ ] `VERSION() == "1.5.0"`
 - [ ] `getThreshold() == 2`
 - [ ] `getOwners()` returns exactly the three intended, distinct addresses
 - [ ] slot 0 (singleton) is the canonical Safe address
