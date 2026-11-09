@@ -367,10 +367,10 @@ forge test --match-path 'test/poc/*'
 ### 7.2 Wave 1 (LP only)
 
 ```sh
-./upgrade.sh --mainnet --lp
+./scripts/upgrade.sh --mainnet --lp
 ```
 
-`upgrade.sh` handles the proxy upgrade and verification. It seeds tokens only on the full path; a
+`scripts/upgrade.sh` handles the proxy upgrade and verification. It seeds tokens only on the full path; a
 `--lp`-only run skips seeding by design.
 
 ### 7.3 Post-upgrade smoke test (mainnet, real order)
@@ -461,8 +461,9 @@ go-live, not discovered during an incident.
 | `test/CentiivTestBase.sol` + 11 new suites | Wave 0 coverage, PoCs, governance rehearsal |
 | `script/Governance.s.sol` | Timelock deploy + Safe calldata helpers |
 | `script/DeploySafe.s.sol` | Canonical-factory Safe proxy deployment + verification |
-| `deploy-safe.sh`, `.env.safe.example` | Safe deployment wrapper and env template |
-| `governance.sh`, `.env.governance.example` | Timelock deploy, Safe calldata, verification wrapper |
+| `scripts/deploy-safe.sh`, `.env.example` | Safe deployment wrapper and env template |
+| `scripts/governance.sh` | Timelock deploy, Safe calldata, verification wrapper |
+| `scripts/load-env.sh` | Shared `.env.test` / `.env.main` loader |
 | `test/fork/GovernanceMainnetFork.t.sol` | Live-mainnet fork rehearsal of the full Wave 3 migration |
 | `scripts/mutation_replay.py`, `scripts/run-mutation-shards.sh` | Replay of the auditor's exact mutant list |
 | `scripts/check-storage-layout.sh`, `scripts/storage_layout_check.py`, `.storage-layout/*` | Storage gate and released baselines |

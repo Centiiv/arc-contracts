@@ -5,13 +5,11 @@
 # Dependencies
 lib/
 
-# Environment
+# Environment (consolidated per network: .env.test / .env.main)
 .env*
 .env.local
-# Keep checked-in templates
+# Keep the checked-in template
 !.env.example
-!.env.safe.example
-!.env.governance.example
 
 # Generated governance calldata
 governance-calldata.txt

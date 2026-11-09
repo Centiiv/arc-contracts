@@ -74,7 +74,7 @@ baseline snapshot is updated only after a successful upgrade.
 
 **Finding reference:** BugPoCer 5.2.7 (Low) — partially disputed.
 
-- `upgrade.sh` already seeds USDC/EURC via `script/SetSupportedTokens.s.sol` between the
+- `scripts/upgrade.sh` already seeds USDC/EURC via `script/SetSupportedTokens.s.sol` between the
   `LiquidityManager` and `LiquidityProvider` upgrades, aborting if seeding fails. The failure mode the
   finding describes is therefore operationally prevented.
 - Residual gap: the protection is procedural (a shell script), not atomic. An operator running

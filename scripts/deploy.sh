@@ -1,8 +1,23 @@
 #!/bin/bash
+#
+# Deploy the Arc Liquidity Protocol proxies.
+#
+#   bash scripts/deploy.sh              # testnet
+#   bash scripts/deploy.sh --mainnet    # mainnet
+#
+# Reads .env.test or .env.main (selected by the network flag). If ENV_FILE is
+# set, that file is used instead. See .env.example for the full variable list.
 
 export PATH="$HOME/.foundry/bin:$PATH"
 
-PROJECT_DIR="$(pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT" || exit 1
+
+PROJECT_DIR="$PROJECT_ROOT"
+
+# shellcheck source=scripts/load-env.sh
+. "$SCRIPT_DIR/load-env.sh"
 
 # --- Parse --network flag ---
 NETWORK="testnet"
@@ -17,21 +32,12 @@ for arg in "$@"; do
   esac
 done
 
-if [ "$NETWORK" = "mainnet" ]; then
-  RPC_URL="https://rpc.mainnet.arc.io"
-  EXPLORER="https://arcscan.app"
-  FAUCET_MSG="  Fund this address with real USDC on Arc mainnet."
-  FAUCET_URL=""
-else
-  RPC_URL="https://rpc.testnet.arc.io"
-  EXPLORER="https://testnet.arcscan.app"
-  FAUCET_MSG="  Arc uses USDC as its native gas token."
-  FAUCET_URL="  Faucet: https://faucet.circle.com"
-fi
+arc_resolve_env
 
 echo "============================================"
 echo "  Arc Liquidity Protocol - Deploy Script"
 echo "  Network: $NETWORK"
+echo "  Env:     $ENV_FILE"
 echo "============================================"
 echo ""
 
@@ -42,30 +48,66 @@ extract_addr() {
   echo "$1" | grep -i "address" | sed 's/.*: *//' | tr -d '[:space:]'
 }
 
-# --- Check if .env already exists ---
-if [ -f ".env" ]; then
-  echo "  Found existing .env file. Loading saved config:"
-  source .env
+# --- Load the consolidated network env if it exists ---
+GENERATE_WALLETS=0
+if [ -f "$ENV_FILE" ]; then
+  echo "  Found $ENV_FILE. Loading saved config..."
+  arc_load_env || { echo "  Error: could not load $ENV_FILE."; exit 1; }
+  arc_clean \
+    PRIVATE_KEY DEPLOYER_ADDR \
+    ADMIN1 ADMIN1_KEY ADMIN2 ADMIN2_KEY RECOVERY RECOVERY_KEY \
+    EVM_MASTER EVM_MASTER_KEY TREASURY TREASURY_KEY RELAYER RELAYER_KEY \
+    USDC EURC UPGRADE_KEY \
+    SAFE_ADMIN1 SAFE_ADMIN2 SAFE_RECOVERY SAFE_THRESHOLD \
+    SAFE_SINGLETON SAFE_PROXY_FACTORY SAFE_FALLBACK_HANDLER SAFE_SALT_NONCE SAFE_ADDRESS \
+    TIMELOCK TIMELOCK_MIN_DELAY GOVERNANCE_KEY \
+    PROXY PROXY_ADMIN IMPLEMENTATION SALT RPC_URL
+fi
+arc_set_network
+
+if [ -z "${DEPLOYER_ADDR:-}" ] && [ -n "${PRIVATE_KEY:-}" ]; then
+  DEPLOYER_ADDR=$(cast wallet address "$PRIVATE_KEY" 2>/dev/null) || true
+fi
+
+# A usable deployment config needs the deployer and the four init roles.
+CONFIG_COMPLETE=1
+for name in PRIVATE_KEY ADMIN1 ADMIN2 TREASURY RELAYER; do
+  if [ -z "${!name:-}" ]; then
+    CONFIG_COMPLETE=0
+  fi
+done
+
+if [ "$CONFIG_COMPLETE" = "1" ]; then
   echo "  Deployer:  $DEPLOYER_ADDR"
   echo "  Admin 1:   $ADMIN1"
   echo "  Admin 2:   $ADMIN2"
+  echo "  Recovery:  ${RECOVERY:-'(unset)'}"
   echo "  Treasury:  $TREASURY"
   echo "  Relayer:   $RELAYER"
-  echo "  USDC:      $USDC"
-  echo "  EURC:      $EURC"
+  echo "  USDC:      ${USDC:-'(default)'}"
+  echo "  EURC:      ${EURC:-'(default)'}"
   echo ""
   read -rp "  Use these? [Y/n]: " USE_EXISTING
   if [ "$USE_EXISTING" = "n" ] || [ "$USE_EXISTING" = "N" ]; then
-    echo "  Regenerating wallets..."
-    echo ""
-    rm -f .env
-  else
-    echo ""
+    echo "  Not using the saved config."
+    echo "  Edit $ENV_FILE (or move it aside) and re-run."
+    exit 1
   fi
+  echo ""
+else
+  if [ "$NETWORK" = "mainnet" ]; then
+    echo "  Error: $ENV_FILE is missing required values."
+    echo "  Fill in PRIVATE_KEY, ADMIN1, ADMIN2, TREASURY and RELAYER,"
+    echo "  then re-run. Use .env.example as the template."
+    exit 1
+  fi
+  echo "  $ENV_FILE is missing required values; generating testnet wallets."
+  echo ""
+  GENERATE_WALLETS=1
 fi
 
-# --- Generate wallets if no .env ---
-if [ ! -f ".env" ]; then
+# --- Generate wallets if needed (testnet only) ---
+if [ "$GENERATE_WALLETS" = "1" ]; then
   echo "[1/4] Generating wallets..."
   echo ""
 
@@ -88,6 +130,13 @@ if [ ! -f ".env" ]; then
   echo "$ADMIN2_RAW"
   ADMIN2_KEY=$(extract_key "$ADMIN2_RAW")
   ADMIN2=$(extract_addr "$ADMIN2_RAW")
+  echo ""
+
+  echo "--- Recovery (third Safe owner) wallet ---"
+  RECOVERY_RAW=$(cast wallet new 2>&1)
+  echo "$RECOVERY_RAW"
+  RECOVERY_KEY=$(extract_key "$RECOVERY_RAW")
+  RECOVERY=$(extract_addr "$RECOVERY_RAW")
   echo ""
 
   echo "--- Treasury wallet ---"
@@ -122,6 +171,12 @@ if [ ! -f ".env" ]; then
   if [ -z "$ADMIN2_KEY" ]; then
     read -rp "  Admin 2 Private Key (0x...): " ADMIN2_KEY
   fi
+  if [ -z "$RECOVERY" ]; then
+    read -rp "  Recovery Address (0x...):    " RECOVERY
+  fi
+  if [ -z "$RECOVERY_KEY" ]; then
+    read -rp "  Recovery Private Key (0x...): " RECOVERY_KEY
+  fi
   if [ -z "$TREASURY" ]; then
     read -rp "  Treasury Address (0x...):    " TREASURY
   fi
@@ -142,22 +197,67 @@ if [ ! -f ".env" ]; then
     EURC="0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
   fi
 
-  cat > "$PROJECT_DIR/.env" <<EOF
+  if [ -f "$ENV_FILE" ]; then
+    ENV_BACKUP="$ENV_FILE.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$ENV_FILE" "$ENV_BACKUP"
+    echo "  Backed up $ENV_FILE to $ENV_BACKUP"
+  fi
+
+  cat > "$ENV_FILE" <<EOF
+# =============================================================================
+# Arc Liquidity Protocol - $NETWORK environment (generated by scripts/deploy.sh)
+# =============================================================================
 PRIVATE_KEY=$DEPLOYER_KEY
 DEPLOYER_ADDR=$DEPLOYER_ADDR
+
 ADMIN1=$ADMIN1
 ADMIN1_KEY=$ADMIN1_KEY
 ADMIN2=$ADMIN2
 ADMIN2_KEY=$ADMIN2_KEY
+RECOVERY=$RECOVERY
+RECOVERY_KEY=$RECOVERY_KEY
+UPGRADE_KEY=$ADMIN1_KEY
+
+EVM_MASTER=${EVM_MASTER:-}
+EVM_MASTER_KEY=${EVM_MASTER_KEY:-}
 TREASURY=$TREASURY
 TREASURY_KEY=$TREASURY_KEY
 RELAYER=$RELAYER
 RELAYER_KEY=$RELAYER_KEY
+
 USDC=$USDC
 EURC=$EURC
+
+# Filled in after deployment.
+LM_PROXY=
+LP_PROXY=
+LM_PROXY_ADMIN=
+LP_PROXY_ADMIN=
+
+# Safe owners default to the protocol admins.
+SAFE_ADMIN1=$ADMIN1
+SAFE_ADMIN2=$ADMIN2
+SAFE_RECOVERY=$RECOVERY
+SAFE_THRESHOLD=2
+SAFE_SINGLETON=
+SAFE_PROXY_FACTORY=
+SAFE_FALLBACK_HANDLER=
+SAFE_SALT_NONCE=0
+SAFE_ADDRESS=
+
+TIMELOCK=
+TIMELOCK_MIN_DELAY=7200
+GOVERNANCE_KEY=
+
+PROXY=
+PROXY_ADMIN=
+IMPLEMENTATION=
+SALT=
+
+RPC_URL=
 EOF
 
-  echo "[2/4] Saved to .env (includes all private keys)"
+  echo "[2/4] Saved to $ENV_FILE (includes all private keys)"
   echo ""
 fi
 
@@ -168,17 +268,23 @@ if [ "$NETWORK" = "mainnet" ]; then
 else
   EURC="${EURC:-0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a}"
 fi
-export USDC EURC
+UPGRADE_KEY="${UPGRADE_KEY:-$ADMIN1_KEY}"
+SAFE_ADMIN1="${SAFE_ADMIN1:-$ADMIN1}"
+SAFE_ADMIN2="${SAFE_ADMIN2:-$ADMIN2}"
+SAFE_RECOVERY="${SAFE_RECOVERY:-$RECOVERY}"
+export USDC EURC PRIVATE_KEY ADMIN1 ADMIN2 RECOVERY TREASURY RELAYER
 
 # --- Summary ---
 echo "============================================"
 echo "  Deployment Config"
 echo "============================================"
 echo "  Network:   $NETWORK"
+echo "  Env:       $ENV_FILE"
 echo "  RPC:       $RPC_URL"
 echo "  Deployer:  $DEPLOYER_ADDR"
 echo "  Admin 1:   $ADMIN1"
 echo "  Admin 2:   $ADMIN2"
+echo "  Recovery:  $RECOVERY"
 echo "  Treasury:  $TREASURY"
 echo "  Relayer:   $RELAYER"
 echo "  USDC:      $USDC"
@@ -207,7 +313,7 @@ if echo "$BALANCE" | grep -qE "^0$"; then
     echo "  (select Arc Testnet)"
     echo ""
   fi
-  echo "  Then re-run: bash deploy.sh --$NETWORK"
+  echo "  Then re-run: bash scripts/deploy.sh --$NETWORK"
   echo ""
 else
   echo "============================================"
@@ -224,23 +330,37 @@ else
 
   forge build
 
-  forge script script/Deploy.s.sol \
+  if ! forge script script/Deploy.s.sol \
     --rpc-url "$RPC_URL" \
     --private-key "$PRIVATE_KEY" \
     --broadcast \
-    -vvv
+    -vvv; then
+    echo ""
+    echo "============================================"
+    echo "  Deployment FAILED"
+    echo "============================================"
+    exit 1
+  fi
 
   echo ""
   echo "============================================"
   echo "  Deployment complete!"
   echo "============================================"
   echo ""
-  echo "  All private keys saved in: $PROJECT_DIR/.env"
+  case "$ENV_FILE" in
+    */*) ENV_PATH="$ENV_FILE" ;;
+    *) ENV_PATH="$PROJECT_DIR/$ENV_FILE" ;;
+  esac
+  echo "  All private keys saved in: $ENV_PATH"
   echo "  Explorer: $EXPLORER"
   echo ""
   echo "  Contracts deployed behind upgradeable proxies."
   echo "  The proxy addresses are your permanent contract addresses."
   echo "  Implementation contracts can be upgraded via ProxyAdmin."
+  echo ""
+  echo "  Next: copy LM_PROXY, LP_PROXY, LM_PROXY_ADMIN and LP_PROXY_ADMIN"
+  echo "  from the output above into $ENV_FILE, then run:"
+  echo "    bash scripts/verify.sh --$NETWORK"
   echo ""
   echo "  Admin functions you can now test:"
   echo "    pause() / unpause()         — either admin"

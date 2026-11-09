@@ -68,7 +68,7 @@ contract DeployScript is Script {
         console.log("LM ProxyAdmin:                  ", lmProxyAdmin);
         console.log("LP ProxyAdmin:                  ", lpProxyAdmin);
         console.log("");
-        console.log("Save these for .env.upgrade:");
+        console.log("Save these for .env.test / .env.main:");
         console.log("  LM_PROXY_ADMIN=%s", lmProxyAdmin);
         console.log("  LP_PROXY_ADMIN=%s", lpProxyAdmin);
         console.log("  LM_PROXY=%s", address(lmProxy));

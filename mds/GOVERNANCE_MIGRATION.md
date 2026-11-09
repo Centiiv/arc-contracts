@@ -69,7 +69,8 @@ USDC gas. If Arc is not yet in the network picker, use Option B; do not wait on 
 
 **Option B — canonical factory (this repo).**
 
-Create `.env.safe`:
+Fill the Safe section of `.env.test` (testnet) or `.env.main` (mainnet), created
+from `.env.example`:
 
 ```sh
 PRIVATE_KEY=0x...        # deployer only; pays gas, is NOT an owner
@@ -82,28 +83,28 @@ Then:
 
 ```sh
 # Simulate first (no broadcast)
-bash deploy-safe.sh --mainnet --dry-run
+bash scripts/deploy-safe.sh --mainnet --dry-run
 
 # Deploy + verify
-bash deploy-safe.sh --mainnet
+bash scripts/deploy-safe.sh --mainnet
 
 # Verify later
-bash deploy-safe.sh --mainnet --verify-only
+bash scripts/deploy-safe.sh --mainnet --verify-only
 ```
 
 The script calls
 `SafeProxyFactory.createProxyWithNonce(singleton, initializer, saltNonce)` with
 `threshold = 2`, the three owners, the canonical fallback handler, and no payment.
 The deployer key only pays gas; it is **not** a Safe owner. On success it writes
-`SAFE_ADDRESS` to `.env.safe`, which `governance.sh` reads.
+`SAFE_ADDRESS` to the same env file, which `scripts/governance.sh` reads.
 
 The Solidity counterpart is `script/DeploySafe.s.sol`; the shell wrapper matches
-`deploy.sh` / `upgrade.sh` conventions (network flag, balance check, build, verify).
+`scripts/deploy.sh` / `scripts/upgrade.sh` conventions (network flag, balance check, build, verify).
 
 Verify:
 
 ```sh
-bash deploy-safe.sh --mainnet --verify-only
+bash scripts/deploy-safe.sh --mainnet --verify-only
 ```
 
 - [ ] `VERSION() == "1.4.1"`
@@ -127,23 +128,28 @@ permanently disable upgrades.
 
 | Shell | Solidity | Purpose |
 |---|---|---|
-| `deploy.sh` | `script/Deploy.s.sol` | Deploy the two proxies |
-| `upgrade.sh` | `script/Upgrade.s.sol` | Upgrade before the timelock takes ownership |
-| `deploy-safe.sh` | `script/DeploySafe.s.sol` | Create the 2-of-3 Safe proxy via the canonical factory |
-| `governance.sh` | `script/Governance.s.sol` | Deploy the timelock; print Safe calldata; verify; print schedule calldata |
+| `scripts/deploy.sh` | `script/Deploy.s.sol` | Deploy the two proxies |
+| `scripts/upgrade.sh` | `script/Upgrade.s.sol` | Upgrade before the timelock takes ownership |
+| `scripts/verify.sh` | `forge verify-contract` | Generate Standard-JSON verification inputs |
+| `scripts/deploy-safe.sh` | `script/DeploySafe.s.sol` | Create the 2-of-3 Safe proxy via the canonical factory |
+| `scripts/governance.sh` | `script/Governance.s.sol` | Deploy the timelock; print Safe calldata; verify; print schedule calldata |
+| `scripts/load-env.sh` | — | Shared `.env.test` / `.env.main` loader |
 
-`deploy-safe.sh` reads `.env.safe`; `governance.sh` reads `.env.upgrade`,
-`.env.safe` and `.env.governance` in that order. Both accept `--mainnet` /
-`--testnet` and check the deployer's USDC gas balance before broadcasting.
+All helpers read the same consolidated network file: `.env.test` for
+`--testnet` and `.env.main` for `--mainnet` (override with `ENV_FILE`). The file
+holds the deployer key, admins, proxy addresses, Safe owners, `SAFE_ADDRESS` and
+`TIMELOCK`; `scripts/deploy-safe.sh` and `scripts/governance.sh` write the last two back. All
+helpers accept `--mainnet` / `--testnet` and check the deployer's USDC gas
+balance before broadcasting where a transaction is signed.
 
 ```sh
-bash deploy-safe.sh --mainnet --dry-run     # simulate, no broadcast
-bash deploy-safe.sh --mainnet               # deploy + verify
-bash governance.sh --mainnet                # show configuration
-bash governance.sh --mainnet --deploy-timelock
-bash governance.sh --mainnet --print        # all Safe calldata -> governance-calldata.txt
-bash governance.sh --mainnet --verify
-bash governance.sh --mainnet --schedule     # scheduleBatch calldata for an upgrade
+bash scripts/deploy-safe.sh --mainnet --dry-run     # simulate, no broadcast
+bash scripts/deploy-safe.sh --mainnet               # deploy + verify
+bash scripts/governance.sh --mainnet                # show configuration
+bash scripts/governance.sh --mainnet --deploy-timelock
+bash scripts/governance.sh --mainnet --print        # all Safe calldata -> governance-calldata.txt
+bash scripts/governance.sh --mainnet --verify
+bash scripts/governance.sh --mainnet --schedule     # scheduleBatch calldata for an upgrade
 ```
 
 ### 2.3 Current Arc mainnet state (verified 8 Nov 2026)
@@ -178,15 +184,15 @@ ARC_MAINNET_RPC_URL=https://rpc.mainnet.arc.io \
 
 Nothing is broadcast. The fork test passed on 8 Nov 2026.
 
-Environment for the scripts:
+Put these in `.env.main` (or `.env.test`), which every helper reads:
 
 ```sh
-export SAFE_ADDRESS=0x...
-export LM_PROXY_ADMIN=0x...
-export LP_PROXY_ADMIN=0x...
-export LM_PROXY=0x...
-export LP_PROXY=0x...
-export TIMELOCK_MIN_DELAY=7200
+SAFE_ADDRESS=0x...
+LM_PROXY_ADMIN=0x...
+LP_PROXY_ADMIN=0x...
+LM_PROXY=0x...
+LP_PROXY=0x...
+TIMELOCK_MIN_DELAY=7200
 ```
 
 ---
@@ -197,9 +203,16 @@ Do this first. The Safe cannot prove control of a `ProxyAdmin` it does not own, 
 original `admin1` EOA key is the only thing that can make this transfer.
 
 ```sh
+set -a
+. ./.env.main          # or .env.test
+set +a
+
 forge script script/Governance.s.sol:GovernanceScript \
   --sig printProxyAdminTransfers -vv
 ```
+
+`bash scripts/governance.sh --mainnet --print` does the same and writes every step to
+`governance-calldata.txt`.
 
 Send the two printed transactions from the original `admin1` EOA. After they land:
 
@@ -214,6 +227,10 @@ each proxy. This proves quorum can drive the `ProxyAdmin` at all, and emits
 `Upgraded(currentImplementation)`.
 
 ```sh
+set -a
+. ./.env.main          # or .env.test
+set +a
+
 export PROXY_ADMIN="$LP_PROXY_ADMIN"
 export PROXY="$LP_PROXY"
 export IMPLEMENTATION=<current LP implementation>
@@ -227,11 +244,11 @@ state; verify `LiquidityProvider.usdc()` / `settingsContract()` before and after
 ## 5. Deploy the timelock
 
 ```sh
-bash governance.sh --mainnet --deploy-timelock
+bash scripts/governance.sh --mainnet --deploy-timelock
 ```
 
 This deploys `TimelockController(minDelay, [Safe], [Safe], address(0))`, writes
-`TIMELOCK` to `.env.governance`, and prints the address.
+`TIMELOCK` to the same env file, and prints the address.
 
 Verification before §6: the ProxyAdmins are owned by the Safe, `admin1` is still the
 EOA, and the timelock reports `minDelay = 7200`, Safe has
@@ -243,7 +260,7 @@ Two Safe transactions. After they execute, **every** upgrade takes at least two 
 That is the intended control, not an incident-time surprise.
 
 ```sh
-bash governance.sh --mainnet --print
+bash scripts/governance.sh --mainnet --print
 ```
 
 Paste each printed `to` / `value` / `data` into Safe{Wallet} → Transaction Builder,
@@ -259,7 +276,7 @@ Two transactions, two different signers.
 2. Safe transaction to `LM_PROXY`: `acceptAdmin1()`.
 
 ```sh
-bash governance.sh --mainnet --print
+bash scripts/governance.sh --mainnet --print
 ```
 
 Consequences:
@@ -274,7 +291,7 @@ Consequences:
 ## 8. Verification checklist
 
 ```sh
-bash governance.sh --mainnet --verify
+bash scripts/governance.sh --mainnet --verify
 ```
 
 - [ ] `LM ProxyAdmin owner == TIMELOCK`

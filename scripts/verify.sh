@@ -1,7 +1,24 @@
 #!/bin/bash
+#
+# Generate Standard-JSON verification inputs for the live Arc contracts.
+#
+#   bash scripts/verify.sh              # testnet
+#   bash scripts/verify.sh --mainnet    # mainnet
+#   bash scripts/verify.sh --lm         # LiquidityManager only
+#   bash scripts/verify.sh --lp         # LiquidityProvider only
+#   bash scripts/verify.sh --proxies    # proxies only
+#
+# Reads .env.test or .env.main (selected by the network flag).
 
 set -e
 export PATH="$HOME/.foundry/bin:$PATH"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT" || exit 1
+
+# shellcheck source=scripts/load-env.sh
+. "$SCRIPT_DIR/load-env.sh"
 
 # --- Parse flags ---
 NETWORK="testnet"
@@ -9,10 +26,10 @@ TARGET="all" # all, lm, lp, proxies
 
 for arg in "$@"; do
   case $arg in
-    --mainnet)
+    --mainnet|--network=mainnet)
       NETWORK="mainnet"
       ;;
-    --testnet)
+    --testnet|--network=testnet)
       NETWORK="testnet"
       ;;
     --lm)
@@ -27,13 +44,8 @@ for arg in "$@"; do
   esac
 done
 
-if [ "$NETWORK" = "mainnet" ]; then
-  RPC_URL="https://rpc.mainnet.arc.io"
-  EXPLORER="https://explorer.arc.io"
-else
-  RPC_URL="https://rpc.testnet.arc.io"
-  EXPLORER="https://explorer.testnet.arc.io"
-fi
+arc_resolve_env
+arc_set_network
 
 OUTPUT_DIR="verification_jsons"
 mkdir -p "$OUTPUT_DIR"
@@ -41,21 +53,21 @@ mkdir -p "$OUTPUT_DIR"
 echo "============================================"
 echo "  Arc Liquidity Protocol - JSON Generator"
 echo "  Network:  $NETWORK"
+echo "  Env:      $ENV_FILE"
 echo "  Target:   $TARGET"
 echo "  Output:   ./$OUTPUT_DIR/"
 echo "============================================"
 echo ""
 
-# --- Load Addresses from .env.upgrade ---
-if [ -f ".env.upgrade" ]; then
-  echo "  Found .env.upgrade. Loading proxy configs..."
-  set -a
-  source .env.upgrade
-  set +a
-  LM_PROXY=$(printf '%s' "$LM_PROXY" | tr -d '\r\n' | xargs 2>/dev/null || true)
-  LP_PROXY=$(printf '%s' "$LP_PROXY" | tr -d '\r\n' | xargs 2>/dev/null || true)
-  LM_PROXY_ADMIN=$(printf '%s' "$LM_PROXY_ADMIN" | tr -d '\r\n' | xargs 2>/dev/null || true)
-  LP_PROXY_ADMIN=$(printf '%s' "$LP_PROXY_ADMIN" | tr -d '\r\n' | xargs 2>/dev/null || true)
+# --- Load proxy addresses from the consolidated env ---
+if [ -f "$ENV_FILE" ]; then
+  echo "  Found $ENV_FILE. Loading proxy configs..."
+  arc_load_env || { echo "  Error: could not load $ENV_FILE."; exit 1; }
+  arc_clean LM_PROXY LP_PROXY LM_PROXY_ADMIN LP_PROXY_ADMIN RPC_URL
+  arc_set_network
+else
+  echo "  Warning: $ENV_FILE not found; proxy addresses must be entered manually."
+  echo ""
 fi
 
 # Fallback: prompt if proxies are not set

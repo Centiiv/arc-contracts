@@ -2,15 +2,16 @@
 #
 # Wave 3 governance helper for Arc.
 #
-#   bash governance.sh --mainnet --deploy-timelock
-#   bash governance.sh --mainnet --print
-#   bash governance.sh --mainnet --verify
-#   bash governance.sh --mainnet --schedule
+#   bash scripts/governance.sh --mainnet --deploy-timelock
+#   bash scripts/governance.sh --mainnet --print
+#   bash scripts/governance.sh --mainnet --verify
+#   bash scripts/governance.sh --mainnet --schedule
 #
-# Reads, in this order, whichever exist:
-#   .env.upgrade      PRIVATE_KEY, LM_PROXY_ADMIN, LP_PROXY_ADMIN, LM_PROXY, LP_PROXY
-#   .env.safe         SAFE_ADDRESS (written by deploy-safe.sh)
-#   .env.governance   TIMELOCK (written by --deploy-timelock) and overrides
+# Reads .env.test or .env.main (selected by the network flag). The file holds:
+#   PRIVATE_KEY / GOVERNANCE_KEY   timelock deployer (gas only)
+#   SAFE_ADDRESS                   written by scripts/deploy-safe.sh
+#   LM_PROXY, LP_PROXY, LM_PROXY_ADMIN, LP_PROXY_ADMIN
+#   TIMELOCK, TIMELOCK_MIN_DELAY   written by --deploy-timelock
 #
 # For --schedule, set:
 #   PROXY=0x...            # the proxy being upgraded
@@ -22,6 +23,13 @@
 # roles or the delay without passing the 2-hour window itself.
 
 export PATH="$HOME/.foundry/bin:$PATH"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT" || exit 1
+
+# shellcheck source=scripts/load-env.sh
+. "$SCRIPT_DIR/load-env.sh"
 
 NETWORK="testnet"
 MODE="status"
@@ -40,17 +48,19 @@ for arg in "$@"; do
       cat <<'USAGE'
 Wave 3 governance helper for Arc.
 
-  bash governance.sh --mainnet --deploy-timelock
-  bash governance.sh --mainnet --deploy-timelock --dry-run
-  bash governance.sh --mainnet --print
-  bash governance.sh --mainnet --verify
-  bash governance.sh --mainnet --schedule
-  bash governance.sh --mainnet            # show configuration
+  bash scripts/governance.sh --mainnet --deploy-timelock
+  bash scripts/governance.sh --mainnet --deploy-timelock --dry-run
+  bash scripts/governance.sh --mainnet --print
+  bash scripts/governance.sh --mainnet --verify
+  bash scripts/governance.sh --mainnet --schedule
+  bash scripts/governance.sh --mainnet            # show configuration
 
-Reads, in this order, whichever exist:
-  .env.upgrade      PRIVATE_KEY, LM_PROXY_ADMIN, LP_PROXY_ADMIN, LM_PROXY, LP_PROXY
-  .env.safe         SAFE_ADDRESS (written by deploy-safe.sh)
-  .env.governance   TIMELOCK (written by --deploy-timelock) and overrides
+Reads .env.test or .env.main (selected by --mainnet / --testnet):
+
+  PRIVATE_KEY / GOVERNANCE_KEY   timelock deployer (gas only)
+  SAFE_ADDRESS                   written by scripts/deploy-safe.sh
+  LM_PROXY, LP_PROXY, LM_PROXY_ADMIN, LP_PROXY_ADMIN
+  TIMELOCK, TIMELOCK_MIN_DELAY
 
 For --schedule, set:
   PROXY=0x...            # the proxy being upgraded
@@ -66,55 +76,36 @@ USAGE
   esac
 done
 
-if [ "$NETWORK" = "mainnet" ]; then
-  RPC_URL="${ARC_MAINNET_RPC_URL:-https://rpc.mainnet.arc.io}"
-  EXPLORER="https://arcscan.app"
-else
-  RPC_URL="${ARC_TESTNET_RPC_URL:-https://rpc.testnet.arc.io}"
-  EXPLORER="https://testnet.arcscan.app"
-fi
+arc_resolve_env
+arc_set_network
 
 echo "============================================"
 echo "  Arc - Governance (Wave 3)"
 echo "  Network: $NETWORK"
+echo "  Env:     $ENV_FILE"
 echo "  Mode:    $MODE"
 echo "============================================"
 echo ""
 
-clean() {
-  printf '%s' "${!1:-}" | tr -d '\r\n' | xargs 2>/dev/null || true
-}
-
-load_env() {
-  if [ -f "$1" ]; then
-    echo "  Loading $1"
-    set -a
-    # shellcheck disable=SC1090
-    . "./$1"
-    set +a
-  fi
-}
-
-load_env ".env.upgrade"
-load_env ".env.safe"
-load_env ".env.governance"
-
-PRIVATE_KEY=$(clean PRIVATE_KEY)
-SAFE_ADDRESS=$(clean SAFE_ADDRESS)
-TIMELOCK=$(clean TIMELOCK)
-TIMELOCK_MIN_DELAY=$(clean TIMELOCK_MIN_DELAY)
-LM_PROXY=$(clean LM_PROXY)
-LP_PROXY=$(clean LP_PROXY)
-LM_PROXY_ADMIN=$(clean LM_PROXY_ADMIN)
-LP_PROXY_ADMIN=$(clean LP_PROXY_ADMIN)
-PROXY=$(clean PROXY)
-PROXY_ADMIN=$(clean PROXY_ADMIN)
-IMPLEMENTATION=$(clean IMPLEMENTATION)
-SALT=$(clean SALT)
+if [ -f "$ENV_FILE" ]; then
+  echo "  Loading $ENV_FILE"
+  arc_load_env || { echo "  Error: could not load $ENV_FILE."; exit 1; }
+  arc_clean \
+    PRIVATE_KEY ADMIN1_KEY GOVERNANCE_KEY \
+    SAFE_ADDRESS \
+    TIMELOCK TIMELOCK_MIN_DELAY \
+    LM_PROXY LP_PROXY LM_PROXY_ADMIN LP_PROXY_ADMIN \
+    PROXY PROXY_ADMIN IMPLEMENTATION SALT RPC_URL
+  arc_set_network
+else
+  echo "  Error: $ENV_FILE not found."
+  echo "  Create it from .env.example, then run scripts/deploy-safe.sh first."
+  exit 1
+fi
 
 unset_empty() {
   local name="$1"
-  if [ -z "$(clean "$name")" ]; then
+  if [ -z "$(printf '%s' "${!name:-}")" ]; then
     unset "$name"
   fi
 }
@@ -126,18 +117,21 @@ unset_empty PROXY_ADMIN
 unset_empty IMPLEMENTATION
 unset_empty SALT
 
+GOVERNANCE_KEY="${GOVERNANCE_KEY:-${PRIVATE_KEY:-$ADMIN1_KEY}}"
+
 export PRIVATE_KEY SAFE_ADDRESS TIMELOCK TIMELOCK_MIN_DELAY
 export LM_PROXY LP_PROXY LM_PROXY_ADMIN LP_PROXY_ADMIN
 export PROXY PROXY_ADMIN IMPLEMENTATION SALT
+export GOVERNANCE_KEY
 
 is_address() { echo "$1" | grep -qE '^0x[0-9a-fA-F]{40}$'; }
 
 require() {
   local name="$1"
   local value
-  value=$(clean "$name")
+  value=$(printf '%s' "${!name:-}")
   if [ -z "$value" ]; then
-    echo "  Error: $name is required for --$MODE"
+    echo "  Error: $name is required for --$MODE (set it in $ENV_FILE)"
     MISSING=1
   fi
 }
@@ -145,13 +139,13 @@ require() {
 # ---------------------------------------------------------------- status
 if [ "$MODE" = "status" ]; then
   echo "  Configuration:"
-  for name in PRIVATE_KEY SAFE_ADDRESS TIMELOCK TIMELOCK_MIN_DELAY \
+  for name in PRIVATE_KEY GOVERNANCE_KEY SAFE_ADDRESS TIMELOCK TIMELOCK_MIN_DELAY \
               LM_PROXY LP_PROXY LM_PROXY_ADMIN LP_PROXY_ADMIN \
               PROXY PROXY_ADMIN IMPLEMENTATION SALT; do
-    value=$(clean "$name")
+    value=$(printf '%s' "${!name:-}")
     if [ -z "$value" ]; then
       echo "    $name: (unset)"
-    elif [ "$name" = "PRIVATE_KEY" ]; then
+    elif [ "$name" = "PRIVATE_KEY" ] || [ "$name" = "GOVERNANCE_KEY" ]; then
       echo "    $name: (set, redacted)"
     else
       echo "    $name: $value"
@@ -159,7 +153,7 @@ if [ "$MODE" = "status" ]; then
   done
   echo ""
   echo "  Modes:"
-  echo "    --deploy-timelock   deploy TimelockController (needs PRIVATE_KEY, SAFE_ADDRESS)"
+  echo "    --deploy-timelock   deploy TimelockController (needs a funded key, SAFE_ADDRESS)"
   echo "    --print             print every Safe transaction calldata"
   echo "    --verify            read owners/threshold/admin/owners on-chain"
   echo "    --schedule          print the scheduleBatch calldata for an upgrade"
@@ -172,7 +166,10 @@ require SAFE_ADDRESS
 
 case "$MODE" in
   deploy-timelock)
-    require PRIVATE_KEY
+    if [ -z "${GOVERNANCE_KEY:-}" ]; then
+      echo "  Error: GOVERNANCE_KEY (or PRIVATE_KEY / ADMIN1_KEY) is required for --deploy-timelock"
+      MISSING=1
+    fi
     ;;
   print|verify)
     require LM_PROXY
@@ -198,10 +195,12 @@ fi
 
 # ---------------------------------------------------------------- deploy timelock
 if [ "$MODE" = "deploy-timelock" ]; then
-  if ! echo "$PRIVATE_KEY" | grep -qE '^0x[0-9a-fA-F]{64}$'; then
-    echo "  Error: PRIVATE_KEY must be 0x + 64 hex chars."
+  if ! echo "$GOVERNANCE_KEY" | grep -qE '^0x[0-9a-fA-F]{64}$'; then
+    echo "  Error: GOVERNANCE_KEY must be 0x + 64 hex chars."
     exit 1
   fi
+  PRIVATE_KEY="$GOVERNANCE_KEY"
+  export PRIVATE_KEY
 
   DEPLOYER=$(cast wallet address "$PRIVATE_KEY" 2>&1) || true
   BALANCE=$(cast balance "$DEPLOYER" --rpc-url "$RPC_URL" 2>&1) || true
@@ -244,26 +243,20 @@ if [ "$MODE" = "deploy-timelock" ]; then
     exit 0
   fi
 
-  if [ -f ".env.governance" ]; then
-    if grep -qE '^TIMELOCK=' .env.governance; then
-      sed -i "s|^TIMELOCK=.*|TIMELOCK=$NEW_TIMELOCK|" .env.governance
-    else
-      printf '\nTIMELOCK=%s\n' "$NEW_TIMELOCK" >> .env.governance
-    fi
+  if grep -qE '^TIMELOCK=' "$ENV_FILE"; then
+    sed -i "s|^TIMELOCK=.*|TIMELOCK=$NEW_TIMELOCK|" "$ENV_FILE"
   else
-    cat > .env.governance <<EOF
-# Wave 3 governance state (generated by governance.sh)
-SAFE_ADDRESS=$SAFE_ADDRESS
-TIMELOCK=$NEW_TIMELOCK
-TIMELOCK_MIN_DELAY=${TIMELOCK_MIN_DELAY:-7200}
-EOF
+    printf '\nTIMELOCK=%s\n' "$NEW_TIMELOCK" >> "$ENV_FILE"
+  fi
+  if ! grep -qE '^TIMELOCK_MIN_DELAY=' "$ENV_FILE"; then
+    printf 'TIMELOCK_MIN_DELAY=%s\n' "${TIMELOCK_MIN_DELAY:-7200}" >> "$ENV_FILE"
   fi
 
   echo ""
   echo "  Timelock: $NEW_TIMELOCK"
-  echo "  Saved TIMELOCK=$NEW_TIMELOCK to .env.governance"
+  echo "  Saved TIMELOCK=$NEW_TIMELOCK to $ENV_FILE"
   echo ""
-  echo "  Next: bash governance.sh --$NETWORK --print"
+  echo "  Next: bash scripts/governance.sh --$NETWORK --print"
   exit 0
 fi
 

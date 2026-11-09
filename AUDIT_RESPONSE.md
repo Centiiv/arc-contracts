@@ -334,13 +334,13 @@ applies, so a sender cannot use this to unseat a live settlement.
 ### 4.7 — 5.2.7 Non-atomic upgrade migration — **Disputed in part; hardening deferred**
 
 **Partly disputed.** The report states that "the README mentions an `upgrade.sh`, but no such file is in
-the repo". `upgrade.sh` is present at the repository root, and `upgrade.sh:236-249` invokes
-`script/SetSupportedTokens.s.sol` **between** the `LiquidityManager` and `LiquidityProvider` upgrades,
-aborting with `exit 1` if seeding fails. The failure mode described — LP upgraded against an empty
-registry, blocking every `createOrder` — is operationally prevented today.
+the repo". `scripts/upgrade.sh` is present in the repository, and its `seed_supported_tokens` step
+(lines 229-268) invokes `script/SetSupportedTokens.s.sol` **between** the `LiquidityManager` and
+`LiquidityProvider` upgrades, aborting with `exit 1` if seeding fails. The failure mode described — LP
+upgraded against an empty registry, blocking every `createOrder` — is operationally prevented today.
 
 **Accepted:** the protection is procedural rather than atomic, and depends on the operator using
-`upgrade.sh`.
+`scripts/upgrade.sh`.
 
 **Deferred:** a `reinitializer(2)` that seeds USDC/EURC and is invoked through `upgradeAndCall` on the
 `LiquidityManager` upgrade. This requires a second proxy upgrade and is tracked in `backlogs.md`.

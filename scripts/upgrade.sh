@@ -1,16 +1,33 @@
 #!/bin/bash
+#
+# Upgrade the Arc Liquidity Protocol proxies (pre-timelock only).
+#
+#   bash scripts/upgrade.sh              # testnet, both proxies
+#   bash scripts/upgrade.sh --mainnet    # mainnet, both proxies
+#   bash scripts/upgrade.sh --lm         # LiquidityManager only
+#   bash scripts/upgrade.sh --lp         # LiquidityProvider only
+#
+# Reads .env.test or .env.main (selected by the network flag). The signing key
+# is UPGRADE_KEY, falling back to ADMIN1_KEY and then PRIVATE_KEY.
 
 export PATH="$HOME/.foundry/bin:$PATH"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT" || exit 1
+
+# shellcheck source=scripts/load-env.sh
+. "$SCRIPT_DIR/load-env.sh"
 
 # --- Parse flags ---
 NETWORK="testnet"
 UPGRADE_TARGET="both"
 for arg in "$@"; do
   case $arg in
-    --mainnet)
+    --mainnet|--network=mainnet)
       NETWORK="mainnet"
       ;;
-    --testnet)
+    --testnet|--network=testnet)
       NETWORK="testnet"
       ;;
     --lm)
@@ -22,82 +39,74 @@ for arg in "$@"; do
   esac
 done
 
-if [ "$NETWORK" = "mainnet" ]; then
-  RPC_URL="https://rpc.mainnet.arc.io"
-  EXPLORER="https://arcscan.app"
-  VERIFY_EXPLORER="https://explorer.arc.io"
-else
-  RPC_URL="https://rpc.testnet.arc.io"
-  EXPLORER="https://testnet.arcscan.app"
-  VERIFY_EXPLORER="https://explorer.testnet.arc.io"
-fi
+arc_resolve_env
+arc_set_network
 
 echo "============================================"
 echo "  Arc Liquidity Protocol - Upgrade Script"
 echo "  Network: $NETWORK"
+echo "  Env:     $ENV_FILE"
 echo "  Target:  $UPGRADE_TARGET"
 echo "============================================"
 echo ""
 
-# --- Check for .env.upgrade ---
-if [ -f ".env.upgrade" ]; then
-  echo "  Found .env.upgrade, loading..."
+# --- Load the consolidated network env ---
+if [ -f "$ENV_FILE" ]; then
+  echo "  Found $ENV_FILE, loading..."
   echo ""
-  set -a
-  source .env.upgrade
-  set +a
-  # Strip CR (Windows CRLF) and whitespace from all values
-  PRIVATE_KEY=$(printf '%s' "$PRIVATE_KEY" | tr -d '\r\n' | xargs 2>/dev/null || true)
-  LM_PROXY_ADMIN=$(printf '%s' "$LM_PROXY_ADMIN" | tr -d '\r\n' | xargs 2>/dev/null || true)
-  LP_PROXY_ADMIN=$(printf '%s' "$LP_PROXY_ADMIN" | tr -d '\r\n' | xargs 2>/dev/null || true)
-  LM_PROXY=$(printf '%s' "$LM_PROXY" | tr -d '\r\n' | xargs 2>/dev/null || true)
-  LP_PROXY=$(printf '%s' "$LP_PROXY" | tr -d '\r\n' | xargs 2>/dev/null || true)
-  export PRIVATE_KEY LM_PROXY_ADMIN LP_PROXY_ADMIN LM_PROXY LP_PROXY
+  arc_load_env || { echo "  Error: could not load $ENV_FILE."; exit 1; }
+  arc_clean \
+    PRIVATE_KEY ADMIN1_KEY UPGRADE_KEY \
+    LM_PROXY_ADMIN LP_PROXY_ADMIN LM_PROXY LP_PROXY \
+    USDC EURC RPC_URL
+  arc_set_network
 else
-  echo "  No .env.upgrade found."
-  echo "  Expected vars: PRIVATE_KEY, LM_PROXY_ADMIN, LP_PROXY_ADMIN, LM_PROXY, LP_PROXY"
+  echo "  No $ENV_FILE found."
+  echo "  Expected vars: UPGRADE_KEY (or ADMIN1_KEY), LM_PROXY_ADMIN,"
+  echo "                 LP_PROXY_ADMIN, LM_PROXY, LP_PROXY"
   echo ""
-  echo "  Example .env.upgrade:"
-  echo "    PRIVATE_KEY=0x..."
-  echo "    LM_PROXY_ADMIN=0x..."
-  echo "    LP_PROXY_ADMIN=0x..."
-  echo "    LM_PROXY=0x..."
-  echo "    LP_PROXY=0x..."
+  echo "  Create it from .env.example:"
+  echo "    cp .env.example $ENV_FILE"
   echo ""
   exit 1
 fi
 
+# The ProxyAdmin owner signs the upgrade. Keep the Solidity scripts and the
+# forge broadcast on the same key by exporting it as PRIVATE_KEY.
+PRIVATE_KEY="${UPGRADE_KEY:-${ADMIN1_KEY:-$PRIVATE_KEY}}"
+export PRIVATE_KEY
+
 # --- Validate required vars ---
 if [ -z "$PRIVATE_KEY" ]; then
-  echo "  Error: PRIVATE_KEY is required in .env.upgrade"
+  echo "  Error: UPGRADE_KEY (or ADMIN1_KEY / PRIVATE_KEY) is required in $ENV_FILE"
   exit 1
 fi
 
 if ! echo "$PRIVATE_KEY" | grep -qE '^0x[0-9a-fA-F]{64}$'; then
-  echo "  Error: PRIVATE_KEY is malformed (expected 0x + 64 hex chars)."
+  echo "  Error: the upgrade key is malformed (expected 0x + 64 hex chars)."
   echo "  Got: ${#PRIVATE_KEY} chars"
   exit 1
 fi
 
 if [ "$UPGRADE_TARGET" = "lm" ] || [ "$UPGRADE_TARGET" = "both" ]; then
   if [ -z "$LM_PROXY" ] || [ -z "$LM_PROXY_ADMIN" ]; then
-    echo "  Error: LM_PROXY and LM_PROXY_ADMIN required in .env.upgrade (or use --lp to skip LM)"
+    echo "  Error: LM_PROXY and LM_PROXY_ADMIN required in $ENV_FILE (or use --lp to skip LM)"
     exit 1
   fi
 fi
 
 if [ "$UPGRADE_TARGET" = "lp" ] || [ "$UPGRADE_TARGET" = "both" ]; then
   if [ -z "$LP_PROXY" ] || [ -z "$LP_PROXY_ADMIN" ]; then
-    echo "  Error: LP_PROXY and LP_PROXY_ADMIN required in .env.upgrade (or use --lm to skip LP)"
+    echo "  Error: LP_PROXY and LP_PROXY_ADMIN required in $ENV_FILE (or use --lm to skip LP)"
     exit 1
   fi
 fi
 
-# --- Check admin1 balance ---
+# --- Check admin balance ---
 echo "[1/3] Checking deployer balance on Arc $NETWORK..."
 DEPLOYER=$(cast wallet address "$PRIVATE_KEY" 2>&1) || true
 if ! echo "$DEPLOYER" | grep -qE '^0x[0-9a-fA-F]{40}$'; then
-  echo "  Error: could not derive deployer address from PRIVATE_KEY:"
+  echo "  Error: could not derive deployer address from the upgrade key:"
   echo "  $DEPLOYER"
   exit 1
 fi
@@ -190,7 +199,7 @@ fail_upgrade() {
   exit 1
 }
 
-# --- Verification JSONs (same format/flow as verify.sh) ---
+# --- Verification JSONs (same format/flow as scripts/verify.sh) ---
 OUTPUT_DIR="verification_jsons"
 mkdir -p "$OUTPUT_DIR"
 VERIFY_LINKS=()
@@ -210,7 +219,7 @@ generate_verify_json() {
     VERIFY_LINKS+=("$desc|$addr|$output_file|$VERIFY_EXPLORER/address/$addr/contract-verification")
   else
     rm -f "$output_file"
-    echo "  Warning: could not generate JSON for $desc (run ./verify.sh manually)"
+    echo "  Warning: could not generate JSON for $desc (run ./scripts/verify.sh manually)"
   fi
 }
 
@@ -221,16 +230,11 @@ seed_supported_tokens() {
   echo ""
   echo "  Seeding supported tokens (USDC, EURC) on $LM_PROXY ..."
 
-  local env_usdc="" env_eurc=""
-  if [ -f ".env" ]; then
-    env_usdc=$(grep -E '^USDC=' .env | tail -1 | cut -d= -f2- | tr -d '\r\n' || true)
-    env_eurc=$(grep -E '^EURC=' .env | tail -1 | cut -d= -f2- | tr -d '\r\n' || true)
-  fi
-  USDC="${env_usdc:-0x3600000000000000000000000000000000000000}"
+  USDC="${USDC:-0x3600000000000000000000000000000000000000}"
   if [ "$NETWORK" = "mainnet" ]; then
-    EURC="${env_eurc:-0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1}"
+    EURC="${EURC:-0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1}"
   else
-    EURC="${env_eurc:-0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a}"
+    EURC="${EURC:-0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a}"
   fi
 
   if ! LM_PROXY="$LM_PROXY" USDC="$USDC" EURC="$EURC" PRIVATE_KEY="$PRIVATE_KEY" \

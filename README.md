@@ -26,7 +26,7 @@ creation. A tier may be set to `0`; that is a valid promotional rate and produce
 zero-fee order rather than an error.
 
 Relayer-created orders must carry an EIP-712 `OrderIntent` signed by the sender. The
-wire format and a viem example are in `EIP712_INTENT.md`.
+wire format and a viem example are in `mds/EIP712_INTENT.md`.
 
 The snapshotted rate is a **cap, not a fixed charge**. `settle()` comes in two forms:
 
@@ -61,12 +61,12 @@ The snapshotted rate is a **cap, not a fixed charge**. `settle()` comes in two f
 - **Timelock**: Deployed with no external admin; delay/role changes must themselves pass the 2-hour delay.
 
 State is preserved across upgrades. The proxy address never changes. See
-`GOVERNANCE_MIGRATION.md` for the migration and `scripts/check-storage-layout.sh` for the
+`mds/GOVERNANCE_MIGRATION.md` for the migration and `scripts/check-storage-layout.sh` for the
 layout gate.
 
 ### Upgrading
 
-Before the governance migration, `upgrade.sh` signs with `admin1` and works as below.
+Before the governance migration, `scripts/upgrade.sh` signs with `admin1` and works as below.
 After the migration, an upgrade is a Safe transaction that schedules
 `ProxyAdmin.upgradeAndCall(proxy, newImpl, "")` on the timelock and executes it two
 hours later. A single EOA can no longer upgrade.
@@ -151,12 +151,15 @@ scripts/
 ├── check-storage-layout.sh      # Storage-layout regression gate
 ├── storage_layout_check.py
 ├── mutation_replay.py           # Replays the auditor's exact mutant list
-└── run-mutation-shards.sh
+├── run-mutation-shards.sh
+├── load-env.sh                  # Shared .env.test / .env.main loader
+├── deploy.sh                    # Testnet/mainnet deployment
+├── upgrade.sh                   # Testnet/mainnet upgrade (pre-migration)
+├── verify.sh                    # Standard-JSON verification inputs
+├── deploy-safe.sh               # Create the 2-of-3 Safe via the canonical factory
+└── governance.sh                # Timelock deploy, Safe calldata, verification
 .storage-layout/                 # Last released layouts (gate baseline)
-deploy.sh                        # Testnet/mainnet deployment
-upgrade.sh                       # Testnet/mainnet upgrade (pre-migration)
-deploy-safe.sh                   # Create the 2-of-3 Safe via the canonical factory
-governance.sh                    # Timelock deploy, Safe calldata, verification
+.env.example                     # Consolidated env template
 ```
 
 ## Setup
@@ -194,31 +197,40 @@ forge test -vvv
 
 ### Environment Variables
 
-Set environment variables (or use `deploy.sh` to generate wallets):
+Configuration lives in one file per network:
+
+| File | Used by |
+|---|---|
+| `.env.test` | `--testnet` (default) |
+| `.env.main` | `--mainnet` |
+
+Copy `.env.example` to the file you need and fill it in. Both files are
+gitignored. Every helper script accepts `ENV_FILE=/path/to/file` to override
+the default.
 
 ```bash
-export PRIVATE_KEY=0x...
-export ADMIN1=0x...
-export ADMIN2=0x...
-export TREASURY=0x...
-export RELAYER=0x...
-export USDC=0x3600000000000000000000000000000000000000
-# Optional — seeds the LiquidityManager supported-token registry with EURC
-export EURC=0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a   # testnet
-# export EURC=0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1  # mainnet
+cp .env.example .env.test
+# fill PRIVATE_KEY, ADMIN1, ADMIN2, RECOVERY, TREASURY, RELAYER
 ```
 
-### Deploy with deploy.sh
+`scripts/deploy.sh` can generate a complete testnet file (including the third Safe
+owner) when `.env.test` is missing. Mainnet never auto-generates wallets; fill
+`.env.main` by hand.
+
+### Deploy with scripts/deploy.sh
 
 ```bash
 # Testnet (default)
-bash deploy.sh
+bash scripts/deploy.sh
 
 # Mainnet
-bash deploy.sh --mainnet
+bash scripts/deploy.sh --mainnet
 ```
 
-The script checks your deployer balance, builds, and deploys proxies. Proxy addresses are logged in the output — these are your permanent contract addresses.
+The script loads `.env.test` or `.env.main`, checks your deployer balance, builds,
+and deploys proxies. Proxy addresses are logged in the output — these are your
+permanent contract addresses. Copy `LM_PROXY`, `LP_PROXY`, `LM_PROXY_ADMIN` and
+`LP_PROXY_ADMIN` back into the same env file.
 
 ### Deploy manually
 
@@ -239,43 +251,44 @@ forge script script/Deploy.s.sol \
   -vvv
 ```
 
-### Upgrade with upgrade.sh
+### Upgrade with scripts/upgrade.sh
 
 > **After the Wave 3 governance migration this script no longer works.** It signs with
 > the `admin1` EOA, which no longer owns the ProxyAdmins. Use the timelock flow in
-> `GOVERNANCE_MIGRATION.md` instead.
+> `mds/GOVERNANCE_MIGRATION.md` instead.
 
-Create a `.env.upgrade` file with your deployed contract addresses and admin1's private key:
+The upgrade key and proxy addresses live in the same network file:
 
 ```bash
-# .env.upgrade
-PRIVATE_KEY=0x...              # admin1 private key
+# .env.test or .env.main
+UPGRADE_KEY=0x...              # ProxyAdmin owner; defaults to ADMIN1_KEY
 LM_PROXY_ADMIN=0x...           # ProxyAdmin for LiquidityManager
 LP_PROXY_ADMIN=0x...           # ProxyAdmin for LiquidityProvider
 LM_PROXY=0x...                 # LiquidityManager proxy address
 LP_PROXY=0x...                 # LiquidityProvider proxy address
 ```
 
-These addresses are logged when you first deploy with `deploy.sh`.
+These addresses are logged when you first deploy with `scripts/deploy.sh`.
 
 ```bash
 # Upgrade both contracts
-bash upgrade.sh
+bash scripts/upgrade.sh
 
 # Upgrade only LiquidityManager
-bash upgrade.sh --lm
+bash scripts/upgrade.sh --lm
 
 # Upgrade only LiquidityProvider
-bash upgrade.sh --lp
+bash scripts/upgrade.sh --lp
 
 # Testnet (default)
-bash upgrade.sh
+bash scripts/upgrade.sh
 
 # Mainnet
-bash upgrade.sh --mainnet
+bash scripts/upgrade.sh --mainnet
 ```
 
-The script checks your admin1 balance, shows current implementation addresses, deploys new implementations, and upgrades the proxies.
+The script checks the upgrade key's balance, shows current implementation addresses,
+deploys new implementations, and upgrades the proxies.
 
 ### Upgrade manually
 
@@ -305,31 +318,41 @@ forge script script/Upgrade.s.sol:UpgradeScript:runLP \
 ### Deploy a Safe and the Wave 3 timelock
 
 The Safe singleton, proxy factory and fallback handler are already deployed at
-their canonical v1.4.1 addresses on Arc. `deploy-safe.sh` only creates the
+their canonical v1.4.1 addresses on Arc. `scripts/deploy-safe.sh` only creates the
 per-Safe proxy through the canonical factory.
 
-```bash
-cp .env.safe.example .env.safe
-# fill PRIVATE_KEY (gas only), SAFE_ADMIN1, SAFE_ADMIN2, SAFE_RECOVERY
+The Safe owners and governance addresses live in the same `.env.test` / `.env.main`:
 
-bash deploy-safe.sh --mainnet --dry-run    # simulate
-bash deploy-safe.sh --mainnet              # deploy + verify, writes SAFE_ADDRESS
-bash deploy-safe.sh --mainnet --verify-only
+```bash
+# .env.main (or .env.test)
+PRIVATE_KEY=0x...        # deployer; pays gas only
+SAFE_ADMIN1=0x...        # defaults to ADMIN1
+SAFE_ADMIN2=0x...        # defaults to ADMIN2
+SAFE_RECOVERY=0x...      # defaults to RECOVERY
+SAFE_THRESHOLD=2
+SAFE_SINGLETON=          # blank -> canonical v1.4.1 on Arc
+SAFE_PROXY_FACTORY=
+SAFE_FALLBACK_HANDLER=
+SAFE_ADDRESS=            # written back by scripts/deploy-safe.sh
+TIMELOCK=                # written back by scripts/governance.sh
 ```
 
-Then the timelock and governance calldata:
+Then:
 
 ```bash
-cp .env.governance.example .env.governance   # optional; .env.upgrade/.env.safe are also read
-bash governance.sh --mainnet                  # show configuration
-bash governance.sh --mainnet --deploy-timelock
-bash governance.sh --mainnet --print          # writes governance-calldata.txt
-bash governance.sh --mainnet --verify
-bash governance.sh --mainnet --schedule       # after setting PROXY/PROXY_ADMIN/IMPLEMENTATION
+bash scripts/deploy-safe.sh --mainnet --dry-run    # simulate
+bash scripts/deploy-safe.sh --mainnet              # deploy + verify, writes SAFE_ADDRESS
+bash scripts/deploy-safe.sh --mainnet --verify-only
+
+bash scripts/governance.sh --mainnet               # show configuration
+bash scripts/governance.sh --mainnet --deploy-timelock
+bash scripts/governance.sh --mainnet --print       # writes governance-calldata.txt
+bash scripts/governance.sh --mainnet --verify
+bash scripts/governance.sh --mainnet --schedule    # after setting PROXY/PROXY_ADMIN/IMPLEMENTATION
 ```
 
 The full ordered migration (EOA → Safe → timelock, `admin1` rotation, live
-verification, alerting, rollback) is in `GOVERNANCE_MIGRATION.md`.
+verification, alerting, rollback) is in `mds/GOVERNANCE_MIGRATION.md`.
 
 ### Gas Estimate
 
@@ -344,7 +367,7 @@ forge script script/Deploy.s.sol \
 - **USDC is native gas token** — 18 decimals for native, 6 decimals for ERC-20 interface
 - **ERC-20 USDC address**: `0x3600000000000000000000000000000000000000` (testnet and mainnet)
 - **ERC-20 EURC address**: `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` (testnet), `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1` (mainnet) — 6 decimals
-- **Supported-token registry**: `createOrder` reverts with `TokenNotSupported` unless the token is registered via `LiquidityManager.setTokenSupported` (admin). `deploy.sh` seeds USDC (and `EURC` when set); after upgrading an existing deployment, run `script/SetSupportedTokens.s.sol` before upgrading the LiquidityProvider implementation (`upgrade.sh` does this automatically)
+- **Supported-token registry**: `createOrder` reverts with `TokenNotSupported` unless the token is registered via `LiquidityManager.setTokenSupported` (admin). `scripts/deploy.sh` seeds USDC (and `EURC` when set); after upgrading an existing deployment, run `script/SetSupportedTokens.s.sol` before upgrading the LiquidityProvider implementation (`scripts/upgrade.sh` does this automatically)
 - **Chain IDs**: `5042002` (testnet), `5042` (mainnet)
 - **RPC**: `https://rpc.testnet.arc.io` / `https://rpc.mainnet.arc.io`
 - **Explorer**: `https://testnet.arcscan.app` / `https://arcscan.app`

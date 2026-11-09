@@ -2,17 +2,17 @@
 #
 # Deploy a 2-of-3 Safe on Arc through the canonical Safe v1.4.1 factory.
 #
-#   bash deploy-safe.sh --mainnet
-#   bash deploy-safe.sh --testnet
-#   bash deploy-safe.sh --mainnet --dry-run     # simulate, do not broadcast
-#   bash deploy-safe.sh --mainnet --verify-only # verify an existing SAFE_ADDRESS
+#   bash scripts/deploy-safe.sh --mainnet
+#   bash scripts/deploy-safe.sh --testnet
+#   bash scripts/deploy-safe.sh --mainnet --dry-run     # simulate, do not broadcast
+#   bash scripts/deploy-safe.sh --mainnet --verify-only # verify an existing SAFE_ADDRESS
 #
-# Reads .env.safe. Create it first:
+# Reads .env.test or .env.main (selected by the network flag):
 #
 #   PRIVATE_KEY=0x...        # deployer only; pays gas, is NOT a Safe owner
-#   SAFE_ADMIN1=0x...
-#   SAFE_ADMIN2=0x...
-#   SAFE_RECOVERY=0x...
+#   SAFE_ADMIN1=0x...        # defaults to ADMIN1
+#   SAFE_ADMIN2=0x...        # defaults to ADMIN2
+#   SAFE_RECOVERY=0x...      # defaults to RECOVERY
 #   # optional:
 #   SAFE_THRESHOLD=2
 #   SAFE_SINGLETON=0x41675C099F32341bf84BFc5382aF534df5C7461a
@@ -22,9 +22,16 @@
 #   SAFE_ADDRESS=            # filled in by this script after a successful deploy
 #
 # The Safe singleton/factory are already deployed on Arc. This script only
-# creates the per-Safe proxy. It appends SAFE_ADDRESS to .env.safe.
+# creates the per-Safe proxy. It writes SAFE_ADDRESS back to the env file.
 
 export PATH="$HOME/.foundry/bin:$PATH"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT" || exit 1
+
+# shellcheck source=scripts/load-env.sh
+. "$SCRIPT_DIR/load-env.sh"
 
 NETWORK="testnet"
 DRY_RUN=0
@@ -40,17 +47,17 @@ for arg in "$@"; do
       cat <<'USAGE'
 Deploy a 2-of-3 Safe on Arc through the canonical Safe v1.4.1 factory.
 
-  bash deploy-safe.sh --mainnet
-  bash deploy-safe.sh --testnet
-  bash deploy-safe.sh --mainnet --dry-run
-  bash deploy-safe.sh --mainnet --verify-only
+  bash scripts/deploy-safe.sh --mainnet
+  bash scripts/deploy-safe.sh --testnet
+  bash scripts/deploy-safe.sh --mainnet --dry-run
+  bash scripts/deploy-safe.sh --mainnet --verify-only
 
-Reads .env.safe:
+Reads .env.test or .env.main:
 
   PRIVATE_KEY=0x...        # deployer only; pays gas, is NOT a Safe owner
-  SAFE_ADMIN1=0x...
-  SAFE_ADMIN2=0x...
-  SAFE_RECOVERY=0x...
+  SAFE_ADMIN1=0x...        # defaults to ADMIN1
+  SAFE_ADMIN2=0x...        # defaults to ADMIN2
+  SAFE_RECOVERY=0x...      # defaults to RECOVERY
   SAFE_THRESHOLD=2         # optional; 2 or 3
   SAFE_SINGLETON=0x...     # optional; canonical default is used
   SAFE_PROXY_FACTORY=0x... # optional; canonical default is used
@@ -59,43 +66,40 @@ Reads .env.safe:
   SAFE_ADDRESS=            # filled in after a successful deploy
 
 The Safe singleton/factory are already deployed on Arc. This script creates
-the per-Safe proxy and appends SAFE_ADDRESS to .env.safe.
+the per-Safe proxy and writes SAFE_ADDRESS back to the env file.
 USAGE
       exit 0
       ;;
   esac
 done
 
-if [ "$NETWORK" = "mainnet" ]; then
-  RPC_URL="${ARC_MAINNET_RPC_URL:-https://rpc.mainnet.arc.io}"
-  EXPLORER="https://arcscan.app"
-  FAUCET_MSG="  Fund it with real USDC on Arc mainnet."
-else
-  RPC_URL="${ARC_TESTNET_RPC_URL:-https://rpc.testnet.arc.io}"
-  EXPLORER="https://testnet.arcscan.app"
-  FAUCET_MSG="  Arc uses USDC as native gas. Faucet: https://faucet.circle.com"
-fi
+arc_resolve_env
+arc_set_network
 
 echo "============================================"
 echo "  Arc - Safe Deployment"
 echo "  Network: $NETWORK"
+echo "  Env:     $ENV_FILE"
 echo "============================================"
 echo ""
 
-clean() {
-  printf '%s' "${!1:-}" | tr -d '\r\n' | xargs 2>/dev/null || true
-}
-
-if [ -f ".env.safe" ]; then
-  echo "  Loading .env.safe"
-  set -a
-  # shellcheck disable=SC1091
-  . ./.env.safe
-  set +a
+if [ -f "$ENV_FILE" ]; then
+  echo "  Loading $ENV_FILE"
+  arc_load_env || { echo "  Error: could not load $ENV_FILE."; exit 1; }
+  arc_clean \
+    PRIVATE_KEY ADMIN1 ADMIN2 RECOVERY \
+    SAFE_ADMIN1 SAFE_ADMIN2 SAFE_RECOVERY SAFE_ADDRESS \
+    SAFE_THRESHOLD SAFE_SALT_NONCE \
+    SAFE_SINGLETON SAFE_PROXY_FACTORY SAFE_FALLBACK_HANDLER \
+    RPC_URL
+  arc_set_network
 else
-  echo "  Error: .env.safe not found."
+  echo "  Error: $ENV_FILE not found."
   echo ""
-  echo "  Create it with:"
+  echo "  Create it from .env.example:"
+  echo "    cp .env.example $ENV_FILE"
+  echo ""
+  echo "  Then fill in:"
   echo "    PRIVATE_KEY=0x...      # deployer, gas only"
   echo "    SAFE_ADMIN1=0x..."
   echo "    SAFE_ADMIN2=0x..."
@@ -103,17 +107,13 @@ else
   exit 1
 fi
 
-PRIVATE_KEY=$(clean PRIVATE_KEY)
-SAFE_ADMIN1=$(clean SAFE_ADMIN1)
-SAFE_ADMIN2=$(clean SAFE_ADMIN2)
-SAFE_RECOVERY=$(clean SAFE_RECOVERY)
-SAFE_ADDRESS=$(clean SAFE_ADDRESS)
-SAFE_THRESHOLD=$(clean SAFE_THRESHOLD)
-SAFE_SALT_NONCE=$(clean SAFE_SALT_NONCE)
+SAFE_ADMIN1="${SAFE_ADMIN1:-$ADMIN1}"
+SAFE_ADMIN2="${SAFE_ADMIN2:-$ADMIN2}"
+SAFE_RECOVERY="${SAFE_RECOVERY:-$RECOVERY}"
 
 unset_empty() {
   local name="$1"
-  if [ -z "$(clean "$name")" ]; then
+  if [ -z "$(printf '%s' "${!name:-}")" ]; then
     unset "$name"
   fi
 }
@@ -156,19 +156,19 @@ if ! echo "$PRIVATE_KEY" | grep -qE '^0x[0-9a-fA-F]{64}$'; then
   errors=1
 fi
 for name in SAFE_ADMIN1 SAFE_ADMIN2 SAFE_RECOVERY; do
-  value=$(clean "$name")
+  value=$(printf '%s' "${!name:-}")
   if ! is_address "$value"; then
     echo "  Error: $name must be a 0x address."
     errors=1
   fi
 done
-if [ "$(clean SAFE_ADMIN1)" = "$(clean SAFE_ADMIN2)" ] ||
-   [ "$(clean SAFE_ADMIN1)" = "$(clean SAFE_RECOVERY)" ] ||
-   [ "$(clean SAFE_ADMIN2)" = "$(clean SAFE_RECOVERY)" ]; then
+if [ "${SAFE_ADMIN1:-}" = "${SAFE_ADMIN2:-}" ] ||
+   [ "${SAFE_ADMIN1:-}" = "${SAFE_RECOVERY:-}" ] ||
+   [ "${SAFE_ADMIN2:-}" = "${SAFE_RECOVERY:-}" ]; then
   echo "  Error: the three owners must be distinct."
   errors=1
 fi
-if [ -n "$SAFE_THRESHOLD" ] && [ "$SAFE_THRESHOLD" != "2" ] && [ "$SAFE_THRESHOLD" != "3" ]; then
+if [ -n "${SAFE_THRESHOLD:-}" ] && [ "$SAFE_THRESHOLD" != "2" ] && [ "$SAFE_THRESHOLD" != "3" ]; then
   echo "  Error: SAFE_THRESHOLD must be 2 or 3."
   errors=1
 fi
@@ -206,7 +206,7 @@ if [ "$BALANCE" = "0" ]; then
     echo ""
     echo "$FAUCET_MSG"
     echo "  Fund: $DEPLOYER"
-    echo "  Then re-run: bash deploy-safe.sh --$NETWORK"
+    echo "  Then re-run: bash scripts/deploy-safe.sh --$NETWORK"
     exit 1
   fi
 fi
@@ -256,13 +256,13 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-# Persist for governance.sh
-if grep -qE '^SAFE_ADDRESS=' .env.safe; then
-  sed -i "s|^SAFE_ADDRESS=.*|SAFE_ADDRESS=$NEW_SAFE|" .env.safe
+# Persist for scripts/governance.sh
+if grep -qE '^SAFE_ADDRESS=' "$ENV_FILE"; then
+  sed -i "s|^SAFE_ADDRESS=.*|SAFE_ADDRESS=$NEW_SAFE|" "$ENV_FILE"
 else
-  printf '\nSAFE_ADDRESS=%s\n' "$NEW_SAFE" >> .env.safe
+  printf '\nSAFE_ADDRESS=%s\n' "$NEW_SAFE" >> "$ENV_FILE"
 fi
-echo "  Saved SAFE_ADDRESS=$NEW_SAFE to .env.safe"
+echo "  Saved SAFE_ADDRESS=$NEW_SAFE to $ENV_FILE"
 echo ""
 
 echo "[verify] Reading the Safe back..."
@@ -274,5 +274,5 @@ echo ""
 echo "  Next:"
 echo "    1. Fund each executing Safe owner with a small USDC gas balance"
 echo "       (the Safe itself does not pay gas)."
-echo "    2. Create .env.governance (see governance.sh --help)."
-echo "    3. bash governance.sh --$NETWORK --deploy-timelock"
+echo "    2. bash scripts/governance.sh --$NETWORK --deploy-timelock"
+echo "    3. bash scripts/governance.sh --$NETWORK --print"
