@@ -133,3 +133,20 @@ emergency refunds are unaffected.
 | `InvalidNonce()` | `nonce < intentNonce(sender)` (already consumed) |
 | `Unauthorized()` | Caller is neither `sender` nor the relayer |
 | `TransferFailed()` / ERC-20 error | Permit/allowance did not authorise the transfer; the intent alone never moves funds |
+
+---
+
+## 7. Backend implementation
+
+`protocol-backend` (commit `8efcabf`):
+
+- `ArcBaseService.signOrderIntent()` builds the domain from the LP proxy and chain id,
+  reads `intentNonce(sender)`, and signs with the sender credential. A local monotonic
+  cursor prevents two concurrent creates in one process from signing the same nonce.
+- `ArcOrderService.createOrder()` validates that `signerCredential` matches `sender`,
+  signs the intent on the relayer path, and passes `intentSig` after `permitSig`.
+  The self path sends the zero intent.
+- `settlement-flow.service.ts` treats `Paused()` from `settle` and
+  `executeSettlementTransfer` as temporary: it holds the op at `STEP1_DONE`, restores
+  the step-2 attempt count, and never marks the order FAILED.
+

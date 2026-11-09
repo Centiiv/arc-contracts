@@ -196,9 +196,11 @@ Delete the `onlyRelayer` modifier. All relayer checks are inline (`_settle:157`,
 
 ### 4.3 Backend impact
 
+**Implemented in `protocol-backend` (commit `8efcabf`).**
+
 | Change | Backend effect |
 |---|---|
-| 1 | STEP2 `executeSettlementTransfer` reverts `Paused()` during a pause. The settlement worker must classify this as **retryable**, not terminal, and hold the op until unpause. |
+| 1 | STEP2 `executeSettlementTransfer` reverts `Paused()` during a pause. The settlement worker now holds the op at `STEP1_DONE` **without consuming the step-2 attempt budget** and never marks the order FAILED. `settle()` (STEP1) gets the same treatment. |
 | 2 | Admin tooling may now call `cancelSettlement` while paused. No code change required. |
 | 5 | None in practice — `buildPermitForPending` returns `NO_PERMIT` (`r == 0`) when allowance suffices, so the new path is not hit. |
 | 7 | Fee display must render a `0` rate without treating it as unset. |
@@ -261,9 +263,14 @@ This is the only storage change in the whole remediation. Verify with the CI lay
 
 ### 5.4 Backend
 
+**Implemented in `protocol-backend` (commit `8efcabf`), deployed after the contract upgrade.**
+
 - Sign an `OrderIntent` alongside the existing EIP-2612 permit whenever the relayer creates an order.
 - Pass `OrderIntentSig` in `createOrderParams` (appended after `permitSig`).
 - The permit remains responsible for moving tokens; the intent is authorisation only.
+- The backend reads `intentNonce(sender)` from the contract and combines it with a
+  local monotonic cursor, so concurrent creates in one process cannot sign the same
+  nonce. Gaps are permitted on-chain and a consumed nonce cannot replay.
 - **Deployment order is contract first, then backend, in a coordinated window.**
   Appending a field changes the canonical tuple, so `createOrder`'s selector changes
   (`test/Migration.t.sol` pins this). The old backend's calldata cannot route to the new
@@ -324,6 +331,14 @@ Safe (2-of-3: admin1, admin2, recovery)
 | ProxyAdmin | `OwnershipTransferred`, `AdminChanged` |
 
 An unmonitored window is not a control. `CallScheduled` is the alert that matters.
+
+**Implemented** in `protocol-backend` (commit `dd2b2b2`): `GovernanceMonitorService`
+polls the timelock, both proxies and both ProxyAdmins every minute, chunks
+`eth_getLogs`, and posts critical events with `@everyone` to a dedicated governance
+webhook (falling back to the transaction-monitor webhook). Config keys:
+`ARC_MAINNET_TIMELOCK_ADDRESS`, `ARC_MAINNET_LM_PROXY_ADMIN_ADDRESS`,
+`ARC_MAINNET_LP_PROXY_ADMIN_ADDRESS` (and the `ARC_TESTNET_*` equivalents),
+`GOVERNANCE_MONITOR_DISCORD_WEBHOOK_URL`.
 
 ### 6.5 Runbook to publish
 
@@ -423,9 +438,13 @@ go-live, not discovered during an incident.
 
 - [x] Wave 0 tests written; 29 fail on `858eaf7`, 236 pass after the patch
 - [ ] Wave 1 deployed; §7.3 smoke test passes including the two paused-state assertions
-- [ ] Mutation score ≥ 90%; survivors justified in writing (not re-run in this repo)
+- [ ] Mutation score ≥ 90%; survivors justified in writing
 - [ ] Wave 2 deployed; one relayer-created order verified end-to-end with a signed intent
-- [ ] Wave 3 complete: Safe + timelock + `admin1` rotation + Discord alerting verified with a live test alert
+- [x] Backend signs `OrderIntent` and holds STEP1/STEP2 on `Paused()` (`8efcabf`)
+- [x] Discord governance watcher for timelock/proxy events (`dd2b2b2`)
+- [ ] Wave 3 executed on-chain: Safe + timelock + `admin1` rotation + live test alert
+- [x] Wave 3 rehearsed end-to-end against live Arc mainnet state on a fork (`cd076c3`)
+- [x] Safe deploy script (`script/DeploySafe.s.sol`) using the canonical Arc factory
 - [x] Storage-layout gate implemented (`scripts/check-storage-layout.sh`), passing locally, wired in `.github/workflows/contracts.yml`
 - [x] Governance script (`script/Governance.s.sol`) and runbook (`GOVERNANCE_MIGRATION.md`)
 - [ ] `AUDIT_RESPONSE.md` `<commit>` / `<tx>` placeholders replaced and re-dated
@@ -440,6 +459,11 @@ go-live, not discovered during an incident.
 | `src/interfaces/ILiquidityProvider.sol` | `intentNonce(address)` |
 | `test/CentiivTestBase.sol` + 11 new suites | Wave 0 coverage, PoCs, governance rehearsal |
 | `script/Governance.s.sol` | Timelock deploy + Safe calldata helpers |
+| `script/DeploySafe.s.sol` | Canonical-factory Safe proxy deployment + verification |
+| `deploy-safe.sh`, `.env.safe.example` | Safe deployment wrapper and env template |
+| `governance.sh`, `.env.governance.example` | Timelock deploy, Safe calldata, verification wrapper |
+| `test/fork/GovernanceMainnetFork.t.sol` | Live-mainnet fork rehearsal of the full Wave 3 migration |
+| `scripts/mutation_replay.py`, `scripts/run-mutation-shards.sh` | Replay of the auditor's exact mutant list |
 | `scripts/check-storage-layout.sh`, `scripts/storage_layout_check.py`, `.storage-layout/*` | Storage gate and released baselines |
 | `.github/workflows/contracts.yml` | Build, test, layout gate |
 | `PROTOCOL_DOCUMENTATION.md` | 5.1.3, 5.2.2, 5.2.5, 5.2.6, 5.2.12, pause semantics, fee units |

@@ -60,6 +60,8 @@ def prepare_workdir(repo: Path, workdir: Path) -> None:
     for name in ("src", "test", "script"):
         shutil.copytree(repo / name, workdir / name)
     shutil.copy2(repo / "foundry.toml", workdir / "foundry.toml")
+    # The fork rehearsal needs a live RPC and is irrelevant to mutants.
+    shutil.rmtree(workdir / "test" / "fork", ignore_errors=True)
     lib = workdir / "lib"
     if lib.exists() or lib.is_symlink():
         lib.unlink()
@@ -73,6 +75,8 @@ def main() -> int:
     parser.add_argument("--workdir", default="/tmp/arc-mut")
     parser.add_argument("--out", default="/tmp/mutation-replay.csv")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--shard", type=int, default=0)
+    parser.add_argument("--shards", type=int, default=1)
     parser.add_argument(
         "--forge",
         default=os.environ.get("FORGE", str(Path.home() / ".foundry" / "bin" / "forge")),
@@ -84,6 +88,12 @@ def main() -> int:
     prepare_workdir(repo, workdir)
 
     rows = list(csv.DictReader(open(args.csv, encoding="utf-8-sig"), delimiter=";"))
+    rows = [row for row in rows if row["File"].startswith("src/")]
+    if args.shards > 1:
+        if args.shard < 0 or args.shard >= args.shards:
+            print("--shard must be in [0, --shards)", file=sys.stderr)
+            return 2
+        rows = rows[args.shard :: args.shards]
     if args.limit:
         rows = rows[: args.limit]
 
@@ -92,8 +102,6 @@ def main() -> int:
 
     for index, row in enumerate(rows, 1):
         rel = row["File"]
-        if not rel.startswith("src/"):
-            continue
 
         expected_line = int(row["Line Number"])
         original = row["Original Code"]

@@ -140,17 +140,23 @@ test/
 ├── LiquidityManager.admin.t.sol        # Rotation symmetry + events
 ├── Governance.t.sol             # Safe/timelock rehearsal
 ├── Migration.t.sol              # Wave 2 selector/calldata migration facts
+├── fork/GovernanceMainnetFork.t.sol    # Full Wave 3 rehearsal against live Arc state
 └── poc/                         # Auditor PoCs, retained as regression tests
 script/
 ├── Deploy.s.sol                 # Proxy deployment script
+├── DeploySafe.s.sol             # Canonical-factory Safe proxy deployment
 ├── Upgrade.s.sol                # Proxy upgrade script (pre-migration)
 └── Governance.s.sol             # Timelock deploy + Safe calldata helpers
 scripts/
 ├── check-storage-layout.sh      # Storage-layout regression gate
-└── storage_layout_check.py
+├── storage_layout_check.py
+├── mutation_replay.py           # Replays the auditor's exact mutant list
+└── run-mutation-shards.sh
 .storage-layout/                 # Last released layouts (gate baseline)
 deploy.sh                        # Testnet/mainnet deployment
 upgrade.sh                       # Testnet/mainnet upgrade (pre-migration)
+deploy-safe.sh                   # Create the 2-of-3 Safe via the canonical factory
+governance.sh                    # Timelock deploy, Safe calldata, verification
 ```
 
 ## Setup
@@ -295,6 +301,35 @@ forge script script/Upgrade.s.sol:UpgradeScript:runLP \
   --rpc-url https://rpc.mainnet.arc.io \
   --broadcast -vvv
 ```
+
+### Deploy a Safe and the Wave 3 timelock
+
+The Safe singleton, proxy factory and fallback handler are already deployed at
+their canonical v1.4.1 addresses on Arc. `deploy-safe.sh` only creates the
+per-Safe proxy through the canonical factory.
+
+```bash
+cp .env.safe.example .env.safe
+# fill PRIVATE_KEY (gas only), SAFE_ADMIN1, SAFE_ADMIN2, SAFE_RECOVERY
+
+bash deploy-safe.sh --mainnet --dry-run    # simulate
+bash deploy-safe.sh --mainnet              # deploy + verify, writes SAFE_ADDRESS
+bash deploy-safe.sh --mainnet --verify-only
+```
+
+Then the timelock and governance calldata:
+
+```bash
+cp .env.governance.example .env.governance   # optional; .env.upgrade/.env.safe are also read
+bash governance.sh --mainnet                  # show configuration
+bash governance.sh --mainnet --deploy-timelock
+bash governance.sh --mainnet --print          # writes governance-calldata.txt
+bash governance.sh --mainnet --verify
+bash governance.sh --mainnet --schedule       # after setting PROXY/PROXY_ADMIN/IMPLEMENTATION
+```
+
+The full ordered migration (EOA → Safe → timelock, `admin1` rotation, live
+verification, alerting, rollback) is in `GOVERNANCE_MIGRATION.md`.
 
 ### Gas Estimate
 

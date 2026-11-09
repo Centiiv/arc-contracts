@@ -8,6 +8,13 @@ lib/
 # Environment
 .env*
 .env.local
+# Keep checked-in templates
+!.env.example
+!.env.safe.example
+!.env.governance.example
+
+# Generated governance calldata
+governance-calldata.txt
 
 # Foundry
 broadcast/

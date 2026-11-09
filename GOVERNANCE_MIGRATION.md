@@ -69,23 +69,41 @@ USDC gas. If Arc is not yet in the network picker, use Option B; do not wait on 
 
 **Option B — canonical factory (this repo).**
 
+Create `.env.safe`:
+
 ```sh
-SAFE_ADMIN1=0x... SAFE_ADMIN2=0x... SAFE_RECOVERY=0x... \
-PRIVATE_KEY=0x... \
-forge script script/DeploySafe.s.sol:DeploySafeScript \
-  --rpc-url https://rpc.mainnet.arc.io --broadcast -vv
+PRIVATE_KEY=0x...        # deployer only; pays gas, is NOT an owner
+SAFE_ADMIN1=0x...
+SAFE_ADMIN2=0x...
+SAFE_RECOVERY=0x...
+```
+
+Then:
+
+```sh
+# Simulate first (no broadcast)
+bash deploy-safe.sh --mainnet --dry-run
+
+# Deploy + verify
+bash deploy-safe.sh --mainnet
+
+# Verify later
+bash deploy-safe.sh --mainnet --verify-only
 ```
 
 The script calls
 `SafeProxyFactory.createProxyWithNonce(singleton, initializer, saltNonce)` with
 `threshold = 2`, the three owners, the canonical fallback handler, and no payment.
-The deployer key only pays gas; it is **not** a Safe owner.
+The deployer key only pays gas; it is **not** a Safe owner. On success it writes
+`SAFE_ADDRESS` to `.env.safe`, which `governance.sh` reads.
+
+The Solidity counterpart is `script/DeploySafe.s.sol`; the shell wrapper matches
+`deploy.sh` / `upgrade.sh` conventions (network flag, balance check, build, verify).
 
 Verify:
 
 ```sh
-SAFE_ADDRESS=0x... forge script script/DeploySafe.s.sol:DeploySafeScript \
-  --sig verify --rpc-url https://rpc.mainnet.arc.io -vv
+bash deploy-safe.sh --mainnet --verify-only
 ```
 
 - [ ] `VERSION() == "1.4.1"`
@@ -105,7 +123,30 @@ ProxyAdmin ownership transfers and `acceptAdmin1` are all ordinary Safe transact
 upgrade authority. 2-of-3 was chosen over 2-of-2 so losing one key does not
 permanently disable upgrades.
 
-### 2.2 Current Arc mainnet state (verified 8 Nov 2026)
+### 2.2 Helper scripts
+
+| Shell | Solidity | Purpose |
+|---|---|---|
+| `deploy.sh` | `script/Deploy.s.sol` | Deploy the two proxies |
+| `upgrade.sh` | `script/Upgrade.s.sol` | Upgrade before the timelock takes ownership |
+| `deploy-safe.sh` | `script/DeploySafe.s.sol` | Create the 2-of-3 Safe proxy via the canonical factory |
+| `governance.sh` | `script/Governance.s.sol` | Deploy the timelock; print Safe calldata; verify; print schedule calldata |
+
+`deploy-safe.sh` reads `.env.safe`; `governance.sh` reads `.env.upgrade`,
+`.env.safe` and `.env.governance` in that order. Both accept `--mainnet` /
+`--testnet` and check the deployer's USDC gas balance before broadcasting.
+
+```sh
+bash deploy-safe.sh --mainnet --dry-run     # simulate, no broadcast
+bash deploy-safe.sh --mainnet               # deploy + verify
+bash governance.sh --mainnet                # show configuration
+bash governance.sh --mainnet --deploy-timelock
+bash governance.sh --mainnet --print        # all Safe calldata -> governance-calldata.txt
+bash governance.sh --mainnet --verify
+bash governance.sh --mainnet --schedule     # scheduleBatch calldata for an upgrade
+```
+
+### 2.3 Current Arc mainnet state (verified 8 Nov 2026)
 
 Read-only against `https://rpc.mainnet.arc.io`:
 
@@ -186,11 +227,11 @@ state; verify `LiquidityProvider.usdc()` / `settingsContract()` before and after
 ## 5. Deploy the timelock
 
 ```sh
-forge script script/Governance.s.sol:GovernanceScript \
-  --rpc-url "$RPC_URL" --broadcast -vv
+bash governance.sh --mainnet --deploy-timelock
 ```
 
-Record the deployed `TimelockController` address as `TIMELOCK`.
+This deploys `TimelockController(minDelay, [Safe], [Safe], address(0))`, writes
+`TIMELOCK` to `.env.governance`, and prints the address.
 
 Verification before §6: the ProxyAdmins are owned by the Safe, `admin1` is still the
 EOA, and the timelock reports `minDelay = 7200`, Safe has
@@ -202,12 +243,12 @@ Two Safe transactions. After they execute, **every** upgrade takes at least two 
 That is the intended control, not an incident-time surprise.
 
 ```sh
-forge script script/Governance.s.sol:GovernanceScript \
-  --sig printTimelockTransfers -vv
+bash governance.sh --mainnet --print
 ```
 
 Paste each printed `to` / `value` / `data` into Safe{Wallet} → Transaction Builder,
-collect 2-of-3 signatures, execute.
+collect 2-of-3 signatures, execute. The two ProxyAdmin transfers to the Safe are
+**EOA transactions**, not Safe transactions: send them from the original `admin1` EOA.
 
 ## 7. Rotate `admin1` to the Safe
 
@@ -218,8 +259,7 @@ Two transactions, two different signers.
 2. Safe transaction to `LM_PROXY`: `acceptAdmin1()`.
 
 ```sh
-forge script script/Governance.s.sol:GovernanceScript \
-  --sig printAdmin1Rotation -vv
+bash governance.sh --mainnet --print
 ```
 
 Consequences:
@@ -234,7 +274,7 @@ Consequences:
 ## 8. Verification checklist
 
 ```sh
-forge script script/Governance.s.sol:GovernanceScript --sig verify -vv
+bash governance.sh --mainnet --verify
 ```
 
 - [ ] `LM ProxyAdmin owner == TIMELOCK`
